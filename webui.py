@@ -71,7 +71,7 @@ h1{font-size:28px;font-weight:700;margin-bottom:2px}
 .scene-card .handle:active{cursor:grabbing}
 .scene-card .num{font-size:12px;font-weight:700;color:var(--muted);min-width:22px;text-align:center}
 .scene-card .thumb{width:90px;height:56px;border-radius:6px;border:1px solid var(--border);background:#fafafa center/cover;flex-shrink:0;cursor:pointer;position:relative;overflow:hidden}
-.scene-card .thumb::after{content:'点击换图';position:absolute;inset:0;background:rgba(0,0,0,.5);color:#fff;font-size:11px;display:flex;align-items:center;justify-content:center;opacity:0;transition:.2s}
+.scene-card .thumb::after{content:'点击看大图';position:absolute;inset:0;background:rgba(0,0,0,.5);color:#fff;font-size:11px;display:flex;align-items:center;justify-content:center;opacity:0;transition:.2s}
 .scene-card .thumb:hover::after{opacity:1}
 .scene-card .thumb.dropping{background:var(--drop) !important}
 .scene-card .body{flex:1;display:flex;flex-direction:column;gap:8px;min-width:0}
@@ -148,9 +148,13 @@ function init(){
   addScene(); addScene(); addScene();
 }
 function handleFiles(files){
+  let next=0;
   for(let f of Array.from(files)){
     if(!f.type.startsWith('image/'))continue;
-    scenes.push({image:f.path||f.name,text:'',hold_sec:0});
+    let idx=scenes.findIndex((s,i)=>i>=next&&!s.image);
+    let p=f.path||f.name;
+    if(idx>=0){scenes[idx].image=p;next=idx+1;}
+    else scenes.push({image:p,text:'',hold_sec:0});
   }
   renderList();
 }
@@ -194,13 +198,14 @@ function cardImageDrop(i,e){
 function renderList(){
   let h='';
   scenes.forEach((s,i)=>{
-    let img=s.image?`<div class="thumb" style="background-image:url('file://${escAttr(s.image)}')" onclick="chooseImage(${i})" ondragover="event.target.closest('.thumb').classList.add('dropping')" ondragleave="event.target.closest('.thumb').classList.remove('dropping')" ondrop="cardImageDrop(${i},event)"></div>`:'<div class="thumb" onclick="chooseImage('+i+')" ondrop="cardImageDrop('+i+',event)" ondragover="event.preventDefault()"></div>';
+    let img=s.image?`<div class="thumb" style="background-image:url('/thumb?path=${encodeURIComponent(s.image)}')" onclick="showLightbox(event,${i})" ondragover="event.target.closest('.thumb').classList.add('dropping')" ondragleave="event.target.closest('.thumb').classList.remove('dropping')" ondrop="cardImageDrop(${i},event)"></div>`:'<div class="thumb" onclick="showLightbox(event,'+i+')" ondrop="cardImageDrop('+i+',event)" ondragover="event.preventDefault()"></div>';
     h+=`<div class="scene-card" draggable="true" ondragstart="dragStart(${i},event)" ondragover="dragOver(event)" ondragend="dragEnd(event)" ondrop="dropOn(${i},event)">
       <div class="handle" title="拖拽排序">⠿</div>
       <div class="num">#${i+1}</div>
       ${img}
       <div class="body">
         <div class="path-row">
+          <button style="font-size:11px;padding:4px 8px;cursor:pointer;white-space:nowrap" onclick="chooseImage(${i})">换图</button>
           <input class="path-input" value="${esc(s.image)}" placeholder="图片路径（也可拖图片到这行）" onchange="scenes[${i}].image=this.value" readonly>
           <input class="hold" type="number" placeholder="多停" value="${s.hold_sec||''}" onchange="scenes[${i}].hold_sec=parseFloat(this.value)||0" title="停秒数">
           <button class="del-btn" onclick="removeScene(${i})" title="删除">×</button>

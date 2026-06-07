@@ -1,0 +1,53 @@
+﻿name: Build & Release EXE
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install pyinstaller edge-tts matplotlib
+
+      - name: Build CLI exe
+        run: pyinstaller --onefile --name narravid --console video_auto.py
+
+      - name: Build WebUI exe
+        run: pyinstaller --onefile --name narravid-webui --console --add-data "examples-assets;examples-assets" webui.py
+
+      - name: Create release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            dist/narravid.exe
+            dist/narravid-webui.exe
+          body: |
+            ## narravid ${{ github.ref_name }}
+
+            ### 下载说明
+            - **narravid-webui.exe** — 双击打开浏览器使用（推荐）
+            - **narravid.exe** — 命令行版本
+
+            ### 使用前请确保已安装 ffmpeg
+            ```
+            winget install ffmpeg
+            ```
+            或从 https://ffmpeg.org/download.html 下载
+
+            ### 快速开始
+            双击 `narravid-webui.exe`，浏览器会自动打开。
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

@@ -357,8 +357,14 @@ def main():
     OUT_BASE.mkdir(parents=True, exist_ok=True)
 
     server = HTTPServer((args.host, args.port), APIHandler)
+    url = f'http://{args.host}:{args.port}'
     print(f'\n  narravid Web UI 已启动')
-    print(f'  → 打开浏览器访问 http://{args.host}:{args.port}\n')
+    print(f'  → 浏览器已自动打开，如未打开请访问 {url}\n')
+
+    # 自动打开浏览器
+    import webbrowser
+    webbrowser.open(url)
+
     try:
         server.serve_forever()
     except KeyboardInterrupt:

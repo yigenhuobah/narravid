@@ -6,6 +6,9 @@ on:
       - 'v*'
   workflow_dispatch:
 
+permissions:
+  contents: write
+
 jobs:
   build:
     runs-on: windows-latest
@@ -26,11 +29,12 @@ jobs:
         run: pyinstaller --onefile --name narravid --console video_auto.py
 
       - name: Build WebUI exe
-        run: pyinstaller --onefile --name narravid-webui --console --add-data "examples-assets;examples-assets" webui.py
+        run: pyinstaller --onefile --name narravid-webui --console webui.py
 
-      - name: Create release
+      - name: Create Release
         uses: softprops/action-gh-release@v2
         with:
+          token: ${{ secrets.GITHUB_TOKEN }}
           files: |
             dist/narravid.exe
             dist/narravid-webui.exe
@@ -49,5 +53,3 @@ jobs:
 
             ### 快速开始
             双击 `narravid-webui.exe`，浏览器会自动打开。
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

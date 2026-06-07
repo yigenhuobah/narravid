@@ -1,0 +1,22 @@
+﻿# generated outputs
+rendered/
+_tmp/
+audio/
+scenes/
+
+# media artifacts
+*.mp4
+*.wav
+*.mp3
+*.aac
+*.srt
+
+# python
+__pycache__/
+*.pyc
+
+# os/editor
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/

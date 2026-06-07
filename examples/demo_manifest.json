@@ -1,0 +1,29 @@
+﻿{
+  "title": "demo narrated video",
+  "width": 1920,
+  "height": 1080,
+  "fps": 30,
+  "tts_engine": "edge",
+  "voice": "zh-CN-XiaoxiaoNeural",
+  "rate": 0,
+  "volume": 100,
+  "speech_speed": 1.25,
+  "scene_tail_silence_sec": 0.15,
+  "burn_subtitles": true,
+  "output_dir": "rendered/demo_manifest",
+  "scenes": [
+    {
+      "image": "../examples-assets/slide-01.png",
+      "text": "This is a generic demo scene. The workflow will generate narration, subtitles, and video automatically"
+    },
+    {
+      "image": "../examples-assets/slide-02.png",
+      "text": "You can use it for charts, slides, or annotated images. Each scene is driven by a simple JSON entry"
+    },
+    {
+      "image": "../examples-assets/slide-03.png",
+      "text": "If a picture needs time on screen, you can add hold time and let the audience look at it",
+      "hold_sec": 2.0
+    }
+  ]
+}

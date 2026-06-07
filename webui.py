@@ -242,6 +242,12 @@ class H(SimpleHTTPRequestHandler):
             super().do_GET()
 
     def do_POST(self):
+        try:
+            self._do_POST_impl()
+        except Exception as e:
+            self._json({'error': f'server error: {e}'}, 500)
+
+    def _do_POST_impl(self):
         p = urllib.parse.urlparse(self.path)
         length = int(self.headers.get('Content-Length',0))
         body = self.rfile.read(length) if length else b''

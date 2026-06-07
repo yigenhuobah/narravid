@@ -1,94 +1,52 @@
 ﻿# narravid 快速上手
 
-5 分钟，从零到第一条解说视频。
+## 推荐方式：下载 exe
 
-## 1. 安装依赖
+1. 去 [Releases](https://github.com/yigenhuobah/narravid/releases) 下载 `narravid-webui.exe`
+2. 双击运行（ffmpeg 已内置，无需安装）
+3. 浏览器自动打开
+4. 拖图片进来 → 写文案 → 选音色 → 点生成
 
-```bash
-# Python 包
-python -m pip install -r narravid\requirements.txt
+## 源码方式
 
-# ffmpeg 必须已在 PATH 中
-ffmpeg -version
-```
-
-## 2. 创建你的第一个 manifest
-
-保存为 `my-video.json`：
-
-```json
-{
-  "title": "我的第一条视频",
-  "scenes": [
-    {
-      "image": "./slide-01.png",
-      "text": "这是第一个场景。narravid 会自动生成配音和字幕。"
-    },
-    {
-      "image": "./slide-02.png",
-      "text": "你可以加任意多个场景。每个场景都会有独立的音频和字幕。"
-    }
-  ]
-}
-```
-
-## 3. 运行
+### 1. 安装
 
 ```bash
-python narravid\video_auto.py my-video.json
+pip install -r requirements.txt
+# ffmpeg 需在 PATH 中（或下载 exe 版本）
 ```
 
-输出在 `rendered/my-video/` 里。
-
-## 4. 换音色、调语速
+### 2. 启动 Web UI
 
 ```bash
-# 查看可用音色
-python -m edge_tts --list-voices
-
-# 换音色
-python narravid\video_auto.py my-video.json --voice zh-CN-YunyangNeural
-
-# 调语速
-python narravid\video_auto.py my-video.json --speed 1.5
-
-# 一起用
-python narravid\video_auto.py my-video.json --voice zh-CN-YunxiNeural --speed 1.4
+python webui.py
 ```
 
-## 5. 加标题页
+### 3. 使用
+
+- **📁 批量添加图片**：点按钮一次选多张
+- **拖拽排序**：拖动场景左边的 ⠿ 手柄调整顺序
+- **拖图片替换**：从文件夹拖图片到缩略图上直接换图
+- **写文案**：每张图下面填解说词，按句号自动切字幕
+- **选音色**：顶部下拉选 TTS 音色
+- **调语速**：拖动语速滑块
+- **点生成**：底部进度条显示进度，完成后下载视频
+
+## 命令行方式
 
 ```bash
-python narravid\video_auto.py my-video.json --title-card "我的分析报告"
+# 基础
+python video_auto.py my-video.json
+
+# 常用参数
+python video_auto.py my-video.json --voice zh-CN-YunyangNeural --speed 1.5 --bgm bgm.mp3
 ```
-
-## 6. 加背景音乐
-
-```bash
-python narravid\video_auto.py my-video.json --bgm bgm.mp3
-```
-
-BGM 会在配音时自动降低音量。
 
 ## 常用音色
 
-| 音色名 | 性别 | 风格 |
-|--------|------|------|
-| `zh-CN-XiaoxiaoNeural` | 女 | 温暖、通用 |
-| `zh-CN-XiaoyiNeural` | 女 | 活泼 |
-| `zh-CN-YunxiNeural` | 男 | 轻快 |
-| `zh-CN-YunyangNeural` | 男 | 专业、播报感 |
-| `zh-CN-YunjianNeural` | 男 | 热情、讲述感 |
-
-## 常见问题
-
-### "edge-tts 失败了怎么办？"
-脚本会自动重试 2 次，还不行就自动切到 Windows 系统 TTS。
-
-### "怎么关掉字幕？"
-```bash
-python narravid\video_auto.py my-video.json --no-burn
-```
-
-### "字幕能不烧录，只导出 srt 吗？"
-可以。加 `--no-burn`，srt 文件会正常生成，只是不压进视频。
+| 音色 | 风格 |
+|------|------|
+| `zh-CN-XiaoxiaoNeural` | 女声·温暖 |
+| `zh-CN-YunyangNeural` | 男声·专业播报 |
+| `zh-CN-YunxiNeural` | 男声·轻快 |
+| `zh-CN-YunjianNeural` | 男声·热情讲述 |

@@ -248,6 +248,13 @@ class H(SimpleHTTPRequestHandler):
         if p.path == '/api/render':
             data = json.loads(body)
             m = data.get('manifest',{})
+            # 把所有图片路径转为绝对路径，避免 video_auto.py 解析错
+            for s in m.get('scenes',[]):
+                img = s.get('image','')
+                if img and not Path(img).is_absolute():
+                    resolved = Path(img).resolve()
+                    if resolved.exists():
+                        s['image'] = str(resolved)
             bgm = data.get('bgm')
             tc = data.get('title_card')
             rid = data.get('render_id', str(uuid.uuid4()))

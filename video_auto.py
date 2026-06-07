@@ -13,16 +13,28 @@ narravid — 图片 + JSON 文案 → 解说视频，一键自动生成。
   - 可选 BGM + 自动闪避
   - 可选自动标题页
   - CLI 参数覆盖 manifest
+  - exe 打包后自带 ffmpeg，无需手动安装
 """
 import argparse
 import importlib.util
 import json
+import os
 import shutil
 import subprocess
 import sys
 import tempfile
 import time
 from pathlib import Path
+
+# ── 打包 exe 时自动定位自带 ffmpeg ──────────────────────────────
+def _setup_bundled_ffmpeg():
+    base = getattr(sys, '_MEIPASS', None)
+    if base:
+        bundled = Path(base) / 'ffmpeg'
+        if bundled.is_dir():
+            os.environ['PATH'] = str(bundled) + os.pathsep + os.environ.get('PATH', '')
+
+_setup_bundled_ffmpeg()
 
 DEFAULT_W = 1920
 DEFAULT_H = 1080

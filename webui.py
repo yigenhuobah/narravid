@@ -1,4 +1,4 @@
-"""
+﻿"""
 narravid Web UI — 浏览器里拖图片、写文案、自由编排、一键生成。
 
 用法:
@@ -6,6 +6,7 @@ narravid Web UI — 浏览器里拖图片、写文案、自由编排、一键生
   python webui.py --port 8080
 """
 import argparse
+import os
 import json
 import shutil
 import subprocess
@@ -14,6 +15,13 @@ import threading
 import time
 import uuid
 from pathlib import Path
+
+
+# 打包 exe 时自动定位自带 ffmpeg
+_base_ff = getattr(sys, '_MEIPASS', None)
+if _base_ff and (Path(_base_ff) / 'ffmpeg').is_dir():
+    os.environ['PATH'] = str(Path(_base_ff) / 'ffmpeg') + os.pathsep + os.environ.get('PATH', '')
+
 from http.server import HTTPServer, SimpleHTTPRequestHandler
 import urllib.parse
 

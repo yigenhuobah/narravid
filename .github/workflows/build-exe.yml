@@ -20,16 +20,26 @@ jobs:
         with:
           python-version: '3.12'
 
-      - name: Install dependencies
+      - name: Install Python deps
         run: |
           python -m pip install --upgrade pip
           pip install pyinstaller edge-tts matplotlib
 
+      - name: Download portable ffmpeg
+        run: |
+          curl -L -o ffmpeg.zip https://www.gyan.dev/ffmpeg/builds/ffmpeg-release-essentials.zip
+          tar -xf ffmpeg.zip
+          $dir = Get-ChildItem -Directory ffmpeg-* | Select-Object -First 1
+          Move-Item "$dir\bin\ffmpeg.exe" ffmpeg.exe
+          Move-Item "$dir\bin\ffprobe.exe" ffprobe.exe
+
       - name: Build CLI exe
-        run: pyinstaller --onefile --name narravid --console video_auto.py
+        run: |
+          pyinstaller --onefile --name narravid --console --add-binary "ffmpeg.exe;ffmpeg" --add-binary "ffprobe.exe;ffmpeg" video_auto.py
 
       - name: Build WebUI exe
-        run: pyinstaller --onefile --name narravid-webui --console webui.py
+        run: |
+          pyinstaller --onefile --name narravid-webui --console --add-binary "ffmpeg.exe;ffmpeg" --add-binary "ffprobe.exe;ffmpeg" webui.py
 
       - name: Create Release
         uses: softprops/action-gh-release@v2
@@ -41,15 +51,10 @@ jobs:
           body: |
             ## narravid ${{ github.ref_name }}
 
-            ### 下载说明
+            ### 无需安装 ffmpeg，exe 已自带！
+
             - **narravid-webui.exe** — 双击打开浏览器使用（推荐）
             - **narravid.exe** — 命令行版本
-
-            ### 使用前请确保已安装 ffmpeg
-            ```
-            winget install ffmpeg
-            ```
-            或从 https://ffmpeg.org/download.html 下载
 
             ### 快速开始
             双击 `narravid-webui.exe`，浏览器会自动打开。

@@ -32,74 +32,180 @@ HTML = r'''<!DOCTYPE html>
 <meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>narravid</title>
 <style>
-:root{--bg:#f5f3ee;--card:#fff;--ink:#1a1a2e;--muted:#787878;--accent:#c2410c;--border:rgba(0,0,0,.08)}
+:root{
+  --bg:#0f0f13;--surface:#1a1a24;--surface2:#24243a;--ink:#e8e6e1;--muted:#8888a0;
+  --accent:#e85d26;--accent2:#ff8c42;--border:rgba(255,255,255,.06);--border2:rgba(255,255,255,.12);
+  --radius:12px;--shadow:0 2px 16px rgba(0,0,0,.4);
+}
 *{box-sizing:border-box;margin:0;padding:0}
-body{font-family:"Microsoft YaHei","PingFang SC",sans-serif;background:var(--bg);color:var(--ink);line-height:1.6}
-.app{max-width:1100px;margin:0 auto;padding:24px 20px 80px}
-h1{font-size:28px;margin-bottom:2px}
-.sub{color:var(--muted);font-size:14px;margin-bottom:18px}
-.bar{display:flex;flex-wrap:wrap;gap:10px;align-items:flex-end;margin-bottom:14px;padding:14px 16px;background:var(--card);border:1px solid var(--border);border-radius:10px;font-size:13px}
-.bar label{font-size:11px;color:var(--muted);display:block;margin-bottom:2px}
-.bar select,.bar input{padding:6px 8px;border:1px solid var(--border);border-radius:5px;background:#fafafa;font-size:13px}
-.bar input[type=range]{padding:0}
-.btn{padding:7px 16px;border:1px solid var(--border);border-radius:6px;background:var(--card);cursor:pointer;font-size:13px;transition:.15s}
-.btn:hover{background:#f0ede6}
-.btn.a{background:var(--accent);color:#fff;border-color:var(--accent)}
-.btn.a:hover{opacity:.9}
-.btn:disabled{opacity:.4;cursor:not-allowed}
-.row{gap:8px;display:flex;flex-wrap:wrap;align-items:center;margin-bottom:10px}
-.card{background:var(--card);border:1px solid var(--border);border-radius:10px;padding:12px 14px;display:flex;gap:10px;align-items:flex-start;margin-bottom:8px}
-.card .grip{cursor:grab;color:#ccc;font-size:18px;padding-top:8px;user-select:none}
-.card .n{font-size:12px;color:var(--muted);min-width:20px;padding-top:9px}
-.card .thumb{width:100px;height:62px;border-radius:6px;border:1px solid var(--border);background:#f0f0f0 center/cover;flex-shrink:0;cursor:zoom-in;position:relative}
-.card .thumb:hover::after{content:'\1F50D';position:absolute;inset:0;background:rgba(0,0,0,.5);color:#fff;font-size:20px;display:flex;align-items:center;justify-content:center}
-.card .body{flex:1;display:flex;flex-direction:column;gap:6px;min-width:0}
-.card .body textarea{width:100%;font-size:13px;padding:8px 10px;border:1px solid var(--border);border-radius:6px;background:#fafafa;resize:vertical;min-height:50px;font-family:inherit}
-.card .foot{display:flex;gap:6px;align-items:center;font-size:11px;flex-wrap:wrap}
-.card .foot .path{flex:1;padding:5px 7px;color:var(--muted);font-size:11px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:250px}
-.card .del{background:none;border:none;color:#c0392b;cursor:pointer;font-size:18px;opacity:.5;padding:0 4px}
-.card .del:hover{opacity:1}
-.card .uploading{opacity:.5}
-.lb{position:fixed;inset:0;background:rgba(0,0,0,.88);z-index:200;cursor:pointer;display:flex;align-items:center;justify-content:center}
-.lb img{max-width:92vw;max-height:92vh;border-radius:10px;box-shadow:0 4px 40px rgba(0,0,0,.5)}
-.status{position:fixed;bottom:0;left:0;right:0;background:#1a1a2e;color:#fff;padding:14px 20px;font-size:14px;display:none;align-items:center;gap:10px;z-index:100}
-.status .spin{width:16px;height:16px;border:2px solid rgba(255,255,255,.2);border-top-color:#fff;border-radius:50%;animation:s .6s linear infinite}
-@keyframes s{to{transform:rotate(360deg)}}
-.result{position:fixed;bottom:56px;left:50%;transform:translateX(-50%);color:#fff;padding:12px 24px;border-radius:10px;display:none;z-index:101;cursor:pointer;font-size:14px}
-.result a{color:#fff;font-weight:700}
-.upload-stats{font-size:12px;color:var(--muted)}
+body{font-family:"Microsoft YaHei","PingFang SC","Noto Sans SC",sans-serif;background:var(--bg);color:var(--ink);line-height:1.6;min-height:100vh}
+
+/* ── 顶部标题栏 ── */
+.header{padding:28px 24px 0;max-width:1120px;margin:0 auto}
+.header h1{font-size:32px;font-weight:800;letter-spacing:-.5px;
+  background:linear-gradient(135deg,var(--accent),var(--accent2));-webkit-background-clip:text;-webkit-text-fill-color:transparent}
+.header .sub{color:var(--muted);font-size:14px;margin-top:4px}
+
+/* ── 设置面板 ── */
+.panel{max-width:1120px;margin:20px auto 0;padding:0 24px;display:grid;grid-template-columns:1fr 1fr;gap:12px}
+.panel .card{background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);padding:16px 18px}
+.panel .card h3{font-size:12px;font-weight:600;color:var(--muted);text-transform:uppercase;letter-spacing:.5px;margin-bottom:10px}
+.field{display:flex;flex-direction:column;gap:4px;margin-bottom:10px}
+.field:last-child{margin-bottom:0}
+.field label{font-size:12px;color:var(--muted);font-weight:500}
+.field select,.field input[type=text]{padding:8px 10px;border:1px solid var(--border2);border-radius:8px;background:var(--surface2);color:var(--ink);font-size:13px;outline:none;transition:.15s}
+.field select:focus,.field input[type=text]:focus{border-color:var(--accent)}
+.field select option{background:var(--surface);color:var(--ink)}
+.range-row{display:flex;align-items:center;gap:10px}
+.range-row input[type=range]{flex:1;-webkit-appearance:none;height:6px;border-radius:3px;background:var(--surface2);outline:none}
+.range-row input[type=range]::-webkit-slider-thumb{-webkit-appearance:none;width:18px;height:18px;border-radius:50%;background:var(--accent);cursor:pointer;box-shadow:0 0 8px rgba(232,93,38,.4)}
+.range-row .val{font-size:14px;font-weight:700;color:var(--accent);min-width:36px;text-align:right}
+.chk-row{display:flex;align-items:center;gap:8px;font-size:13px;cursor:pointer;margin-top:2px}
+.chk-row input[type=checkbox]{accent-color:var(--accent);width:16px;height:16px}
+
+/* ── 操作栏 ── */
+.actions{max-width:1120px;margin:16px auto 0;padding:0 24px;display:flex;gap:10px;align-items:center;flex-wrap:wrap}
+.btn{padding:9px 20px;border:1px solid var(--border2);border-radius:8px;background:var(--surface);color:var(--ink);cursor:pointer;font-size:13px;font-weight:500;transition:.2s;user-select:none}
+.btn:hover{background:var(--surface2);border-color:rgba(255,255,255,.2)}
+.btn.primary{background:linear-gradient(135deg,var(--accent),var(--accent2));color:#fff;border:none;font-weight:700;padding:10px 28px;font-size:15px;box-shadow:0 4px 20px rgba(232,93,38,.3)}
+.btn.primary:hover{opacity:.9;transform:translateY(-1px);box-shadow:0 6px 24px rgba(232,93,38,.4)}
+.btn.primary:disabled{opacity:.4;cursor:not-allowed;transform:none}
+.btn:disabled{opacity:.35;cursor:not-allowed}
+.upload-stats{font-size:12px;color:var(--muted);margin-left:auto}
+
+/* ── 场景列表 ── */
+.scenes{max-width:1120px;margin:16px auto 80px;padding:0 24px}
+.scene{background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);padding:14px 16px;display:flex;gap:14px;align-items:flex-start;margin-bottom:10px;transition:.2s}
+.scene:hover{border-color:var(--border2)}
+.scene .grip{cursor:grab;color:#555;font-size:20px;padding-top:14px;user-select:none;transition:.15s}
+.scene .grip:hover{color:var(--muted)}
+.scene .idx{font-size:13px;color:var(--muted);font-weight:700;min-width:24px;padding-top:14px}
+.scene .thumb{width:128px;height:80px;border-radius:8px;border:1px solid var(--border2);background:var(--surface2) center/cover;flex-shrink:0;cursor:zoom-in;position:relative;overflow:hidden}
+.scene .thumb:hover::after{content:'🔍';position:absolute;inset:0;background:rgba(0,0,0,.55);color:#fff;font-size:22px;display:flex;align-items:center;justify-content:center}
+.scene .body{flex:1;display:flex;flex-direction:column;gap:8px;min-width:0}
+.scene textarea{width:100%;font-size:14px;padding:10px 12px;border:1px solid var(--border2);border-radius:8px;background:var(--surface2);color:var(--ink);resize:vertical;min-height:56px;font-family:inherit;line-height:1.5;outline:none;transition:.15s}
+.scene textarea:focus{border-color:var(--accent);background:rgba(36,36,58,.8)}
+.scene textarea::placeholder{color:var(--muted)}
+.scene .foot{display:flex;gap:8px;align-items:center;font-size:12px;flex-wrap:wrap}
+.scene .foot .path{flex:1;color:var(--muted);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:260px;font-size:11px}
+.scene .hold-input{width:64px;padding:5px 8px;border:1px solid var(--border2);border-radius:6px;background:var(--surface2);color:var(--ink);font-size:12px;text-align:center}
+.scene .foot .btn-sm{padding:4px 10px;font-size:11px;border:1px solid var(--border2);border-radius:6px;background:var(--surface2);color:var(--ink);cursor:pointer;transition:.15s}
+.scene .foot .btn-sm:hover{background:var(--accent);color:#fff;border-color:var(--accent)}
+.scene .del{background:none;border:none;color:#666;cursor:pointer;font-size:20px;padding:0 2px;transition:.15s}
+.scene .del:hover{color:#e74c3c}
+
+/* ── 灯箱 ── */
+.lb{position:fixed;inset:0;background:rgba(0,0,0,.92);z-index:200;cursor:pointer;display:flex;align-items:center;justify-content:center;animation:fadeIn .2s}
+.lb img{max-width:92vw;max-height:92vh;border-radius:12px;box-shadow:0 8px 60px rgba(0,0,0,.7)}
+@keyframes fadeIn{from{opacity:0}to{opacity:1}}
+
+/* ── 底部状态栏 ── */
+.status-bar{position:fixed;bottom:0;left:0;right:0;background:var(--surface);border-top:1px solid var(--border2);padding:0;z-index:100;display:none}
+.status-bar .progress-track{height:4px;background:var(--surface2)}
+.status-bar .progress-fill{height:100%;background:linear-gradient(90deg,var(--accent),var(--accent2));width:0;transition:width .5s}
+.status-bar .status-body{padding:12px 20px;display:flex;align-items:center;gap:12px;font-size:14px}
+.status-bar .spin{width:16px;height:16px;border:2px solid var(--border2);border-top-color:var(--accent);border-radius:50%;animation:sp .6s linear infinite;flex-shrink:0}
+@keyframes sp{to{transform:rotate(360deg)}}
+.status-bar .msg{flex:1}
+.status-bar .cancel-btn{color:#e74c3c;cursor:pointer;font-size:16px;padding:2px 6px;border-radius:4px;transition:.15s}
+.status-bar .cancel-btn:hover{background:rgba(231,76,60,.15)}
+
+/* ── 结果提示 ── */
+.result{position:fixed;bottom:64px;left:50%;transform:translateX(-50%);color:#fff;padding:14px 28px;border-radius:12px;display:none;z-index:101;cursor:pointer;font-size:14px;font-weight:500;box-shadow:var(--shadow);animation:slideUp .3s}
+.result a{color:#fff;font-weight:700;text-decoration:underline}
+@keyframes slideUp{from{transform:translateX(-50%) translateY(20px);opacity:0}to{transform:translateX(-50%) translateY(0);opacity:1}}
+
+/* ── 空状态 ── */
+.empty{text-align:center;padding:60px 20px;color:var(--muted)}
+.empty .icon{font-size:48px;margin-bottom:12px;opacity:.5}
+.empty p{font-size:15px;margin-bottom:4px}
+.empty .hint{font-size:13px;opacity:.6}
+
+/* ── 响应式 ── */
+@media(max-width:768px){
+  .panel{grid-template-columns:1fr}
+  .scene .thumb{width:80px;height:50px}
+  .header h1{font-size:24px}
+}
 </style>
 </head>
 <body>
-<div class="app">
-<h1>narravid</h1><div class="sub">拖图片到下方 → 写文案 → 点生成 <span class="upload-stats" id="ustats"></span></div>
 
-<div class="bar">
-<div><label>音色</label><select id="v"><option value="zh-CN-XiaoxiaoNeural">Xiaoxiao(女温)</option><option value="zh-CN-YunyangNeural">Yunyang(男专)</option><option value="zh-CN-YunxiNeural">Yunxi(男轻)</option></select></div>
-<div><label>语速 <b id="sv">1.5</b></label><input type="range" id="sp" min="0.8" max="2.2" step="0.05" value="1.5" style="width:90px"></div>
-<div><label>标题</label><input id="tc" placeholder="可选" style="width:100px"></div>
-<div><label>BGM</label><input type="file" id="bgm" accept="audio/*" style="width:150px;font-size:11px"></div>
-<div style="display:flex;align-items:flex-end"><label style="cursor:pointer;font-size:13px;display:flex;gap:4px"><input type="checkbox" id="bs" checked>烧录字幕</label></div>
-<div><label>线程</label><select id="wk"><option value="1">1 (串行)</option><option value="2">2</option><option value="4" selected>4 (默认)</option><option value="8">8</option><option value="16">16</option></select></div>
+<div class="header">
+  <h1>narravid</h1>
+  <div class="sub">图片 + 文案 → 解说视频，一键生成</div>
 </div>
 
-<div class="row">
-  <button class="btn a" onclick="batch()">+ 批量添加图片</button>
+<div class="panel">
+  <div class="card">
+    <h3>🎙 语音设置</h3>
+    <div class="field">
+      <label>TTS 音色</label>
+      <select id="v">
+        <option value="zh-CN-XiaoxiaoNeural">Xiaoxiao · 女声温暖</option>
+        <option value="zh-CN-YunyangNeural">Yunyang · 男声播报</option>
+        <option value="zh-CN-YunxiNeural">Yunxi · 男声轻快</option>
+        <option value="zh-CN-YunjianNeural">Yunjian · 男声讲述</option>
+      </select>
+    </div>
+    <div class="field">
+      <label>语速</label>
+      <div class="range-row">
+        <input type="range" id="sp" min="0.8" max="2.2" step="0.05" value="1.5">
+        <span class="val" id="sv">1.5x</span>
+      </div>
+    </div>
+    <label class="chk-row"><input type="checkbox" id="bs" checked>烧录字幕到视频</label>
+  </div>
+
+  <div class="card">
+    <h3>🎬 输出设置</h3>
+    <div class="field">
+      <label>标题页文字</label>
+      <input type="text" id="tc" placeholder="留空则不生成标题页">
+    </div>
+    <div class="field">
+      <label>背景音乐 (BGM)</label>
+      <input type="file" id="bgm" accept="audio/*" style="font-size:12px;color:var(--muted)">
+    </div>
+    <div class="field">
+      <label>并行线程数</label>
+      <select id="wk">
+        <option value="1">1 · 串行（调试用）</option>
+        <option value="2">2 线程</option>
+        <option value="4" selected>4 线程（推荐）</option>
+        <option value="8">8 线程</option>
+        <option value="16">16 线程</option>
+      </select>
+    </div>
+  </div>
+</div>
+
+<div class="actions">
+  <button class="btn primary" id="rb" onclick="render()">▶ 生成视频</button>
+  <button class="btn" onclick="batch()">+ 添加图片</button>
   <button class="btn" onclick="add()">+ 空场景</button>
-  <button class="btn a" id="rb" onclick="render()">▶ 生成视频</button>
+  <span class="upload-stats" id="ustats"></span>
 </div>
 
-<div id="list"></div>
-</div>
+<div class="scenes" id="list"></div>
 
-<div class="status" id="st"><div class="spin"></div><div id="sm">准备中</div><span onclick="cancel()" style="color:#e74c3c;cursor:pointer">✕</span></div>
+<div class="status-bar" id="st">
+  <div class="progress-track"><div class="progress-fill" id="pf"></div></div>
+  <div class="status-body">
+    <div class="spin"></div>
+    <div class="msg" id="sm">准备中</div>
+    <div class="cancel-btn" onclick="cancel()">✕</div>
+  </div>
+</div>
 <div class="result" id="rs" onclick="this.style.display='none'"></div>
+
 <script>
-let S=[],rid=null,tmr=null,uploading=0,bgmPath=null;
+let S=[],rid=null,tmr=null,uploading=0;
 const E=id=>document.getElementById(id);
 
 function init(){
-  E('sp').oninput=()=>E('sv').textContent=E('sp').value;
+  E('sp').oninput=()=>E('sv').textContent=parseFloat(E('sp').value).toFixed(2)+'x';
   add();add();add();
 }
 
@@ -126,8 +232,7 @@ async function batch(){
   inp.onchange=async()=>{
     if(!inp.files.length)return;
     let files=Array.from(inp.files);
-    uploading=files.length;
-    updateStats();
+    uploading=files.length;updateStats();
     let next=0;
     for(let f of files){
       if(!f.type.startsWith('image/')){uploading--;continue}
@@ -136,14 +241,9 @@ async function batch(){
       if(idx<0){S.push({image:'',text:'',hold:0});next=S.length-1}
       else next=idx+1;
       pain();
-      try{
-        let path=await uploadFile(f);
-        S[sidx].image=path;
-        S[sidx]._name=f.name;
-      }catch(e){console.error('upload',e)}
-      uploading--;
-      updateStats();
-      pain();
+      try{let path=await uploadFile(f);S[sidx].image=path;S[sidx]._name=f.name}
+      catch(e){console.error('upload',e)}
+      uploading--;updateStats();pain();
     }
   };
   inp.click();
@@ -158,13 +258,10 @@ function handleDrop(files){
     if(idx<0){S.push({image:'',text:'',hold:0});next=S.length-1}
     else next=idx+1;
     pain();
-    uploading++;
-    updateStats();
-    uploadFile(f).then(path=>{
-      S[sidx].image=path;S[sidx]._name=f.name;
-    }).catch(e=>console.error('upload',e)).finally(()=>{
-      uploading--;updateStats();pain();
-    });
+    uploading++;updateStats();
+    uploadFile(f).then(path=>{S[sidx].image=path;S[sidx]._name=f.name})
+    .catch(e=>console.error('upload',e))
+    .finally(()=>{uploading--;updateStats();pain()});
   }
 }
 
@@ -182,7 +279,7 @@ function chImg(i){
   inp.click();
 }
 function updateStats(){
-  E('ustats').textContent=uploading>0?`(${uploading} 张上传中...)`:'';
+  E('ustats').textContent=uploading>0?uploading+' 张上传中...':'';
 }
 function thumbUrl(i){
   let img=S[i].image;
@@ -196,24 +293,30 @@ function lightbox(i){
   document.body.appendChild(d);
 }
 let dragFrom=null;
-function dragS(i,e){dragFrom=i}
+function dragS(i){dragFrom=i}
 function dropS(i,e){e.preventDefault();if(dragFrom===null||dragFrom===i)return;let t=S.splice(dragFrom,1)[0];S.splice(i,0,t);pain()}
+
 function pain(){
+  if(!S.length){
+    E('list').innerHTML='<div class="empty"><div class="icon">🎞</div><p>还没有场景</p><div class="hint">点击「添加图片」或将图片拖入此页面</div></div>';
+    return;
+  }
   let h='';
   S.forEach((s,i)=>{
     let tu=thumbUrl(i);
     let bg=tu?' style="background-image:url('+tu+')"':'';
     let nm=s._name||(s.image?s.image.split('/').pop().split('\\').pop():'');
-    h+='<div class="card" draggable="true" ondragstart="dragS('+i+',event)" ondragover="event.preventDefault()" ondrop="dropS('+i+',event)">'
-      +'<div class="grip">\u281F</div><div class="n">#'+(i+1)+'</div>'
+    h+='<div class="scene" draggable="true" ondragstart="dragS('+i+',event)" ondragover="event.preventDefault()" ondrop="dropS('+i+',event)">'
+      +'<div class="grip" title="拖拽排序">⠿</div>'
+      +'<div class="idx">#'+(i+1)+'</div>'
       +'<div class="thumb"'+bg+' onclick="lightbox('+i+')"></div>'
       +'<div class="body">'
-        +'<textarea placeholder="解说文案（按句号切字幕）。留空=只展示图片" onchange="S['+i+'].text=this.value">'+esc(s.text)+'</textarea>'
+        +'<textarea placeholder="输入解说文案（按句号自动切字幕）" onchange="S['+i+'].text=this.value">'+esc(s.text)+'</textarea>'
         +'<div class="foot">'
-          +'<span class="path">'+esc(nm||'未上传')+'</span>'
-          +'<input type="number" placeholder="多停秒" style="width:56px" value="'+(s.hold||'')+'" onchange="S['+i+'].hold=parseFloat(this.value)||0">'
-          +'<button class="btn" onclick="chImg('+i+')" style="font-size:11px;padding:3px 8px">换图</button>'
-          +'<button class="del" onclick="del('+i+')">×</button>'
+          +'<span class="path">'+esc(nm||'未上传图片')+'</span>'
+          +'<input class="hold-input" type="number" placeholder="停顿秒" value="'+(s.hold||'')+'" onchange="S['+i+'].hold=parseFloat(this.value)||0" title="场景末尾额外停留秒数">'
+          +'<button class="btn-sm" onclick="chImg('+i+')">换图</button>'
+          +'<button class="del" onclick="del('+i+')" title="删除场景">×</button>'
         +'</div>'
       +'</div></div>';
   });
@@ -221,26 +324,34 @@ function pain(){
 }
 function esc(s){return(s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')}
 
+/* ── 进度解析 ── */
+function parseProgress(text){
+  if(!text)return 5;
+  let m=text.match(/\[(\d+)\/(\d+)\]/);
+  if(m)return Math.round(parseInt(m[1])/parseInt(m[2])*100);
+  if(text.includes('完成'))return 100;
+  if(text.includes('TTS'))return 15;
+  if(text.includes('渲染'))return 50;
+  if(text.includes('concat')||text.includes('合并'))return 85;
+  return 10;
+}
+
 async function render(){
   let valid=S.filter(s=>s.image);
   if(!valid.length){alert('请至少添加一张图片');return}
   if(uploading>0){alert('还有图片在上传中，请稍候');return}
-
-  // 上传 BGM 文件（如果选了的话）
   let bgm=null;
   if(E('bgm').files.length>0){
-    try{
-      E('sm').textContent='上传 BGM...';
-      bgm=await uploadFile(E('bgm').files[0]);
-    }catch(e){alert('BGM 上传失败: '+e);return}
+    try{E('sm').textContent='上传 BGM...';bgm=await uploadFile(E('bgm').files[0])}
+    catch(e){alert('BGM 上传失败: '+e);return}
   }
-
   let m={title:'narravid',width:1920,height:1080,tts_engine:'edge',workers:parseInt(E('wk').value),
     voice:E('v').value,speech_speed:parseFloat(E('sp').value),burn_subtitles:E('bs').checked,
     scenes:valid.map(s=>({image:s.image,text:s.text.trim(),hold_sec:s.hold||0}))};
   let body={manifest:m,bgm:bgm,title_card:E('tc').value.trim()||null};
   rid='r'+Math.random().toString(36).slice(2,8);
-  E('st').style.display='flex';E('sm').textContent='正在生成视频...';E('rb').disabled=true;
+  E('st').style.display='block';E('sm').textContent='正在生成视频...';E('rb').disabled=true;
+  E('pf').style.width='2%';
   try{
     let r=await fetch('/api/render',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({...body,render_id:rid})});
     let d=await r.json();
@@ -253,23 +364,26 @@ function poll(){
   fetch('/api/status/'+rid).then(r=>r.json()).then(d=>{
     if(d.error){done(d.error);return}
     E('sm').textContent=d.progress||'渲染中';
+    E('pf').style.width=parseProgress(d.progress)+'%';
     if(d.done){done(null,d.video);return}
     tmr=setTimeout(poll,800);
   }).catch(()=>{tmr=setTimeout(poll,1000)});
 }
 function done(err,video){
   clearTimeout(tmr);E('st').style.display='none';E('rb').disabled=false;rid=null;
+  E('pf').style.width='0';
   let b=E('rs');
-  if(err){b.textContent='失败: '+err;b.style.background='#e74c3c';b.style.display='block'}
-  else{b.innerHTML='完成！<a href="'+video+'" download>下载视频</a>';b.style.background='#27ae60';b.style.display='block'}
+  if(err){b.textContent='❌ '+err;b.style.background='linear-gradient(135deg,#c0392b,#e74c3c)';b.style.display='block'}
+  else{b.innerHTML='✅ 视频已生成！<a href="'+video+'" download>点击下载</a>';b.style.background='linear-gradient(135deg,#1e8449,#27ae60)';b.style.display='block'}
 }
-function cancel(){if(rid)fetch('/api/cancel/'+rid,{method:'POST'});clearTimeout(tmr);E('st').style.display='none';E('rb').disabled=false;rid=null}
+function cancel(){if(rid)fetch('/api/cancel/'+rid,{method:'POST'});clearTimeout(tmr);E('st').style.display='none';E('rb').disabled=false;rid=null;E('pf').style.width='0'}
 document.addEventListener('dragover',e=>e.preventDefault());
 document.addEventListener('drop',e=>{e.preventDefault();if(e.dataTransfer.files.length)handleDrop(e.dataTransfer.files)});
 init();
 </script>
 </body>
-</html>'''
+</html>
+'''
 
 JOBS = {}
 

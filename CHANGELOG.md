@@ -5,13 +5,36 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [v1.3.1] - 2026-06-09
+
+### Changed
+
+- **WebUI v5 暗色主题重构**：整体视觉重做
+  - 深色背景 (#0f0f13) + 橙色渐变强调色 (#e85d26 → #ff8c42)
+  - 设置面板改为双栏卡片布局（语音设置 / 输出设置）
+  - 生成按钮突出为渐变主按钮，带投影和 hover 上浮动效
+  - 场景卡片缩略图加大至 128×80，文字区更宽敞
+  - 底部状态栏新增彩色进度条（解析 [N/M] 格式 → 百分比）
+  - 空场景列表增加引导提示
+  - 结果通知改为上滑渐入动画
+  - 响应式适配：768px 以下自动切换单栏
+
+### Improved
+
+- 控件标签 11px → 12px，更易辨认
+- 音色选项增加中文描述（如"Xiaoxiao · 女声温暖"）
+- 线程选项增加说明文字（"串行（调试用）"、"推荐"）
+- 停顿输入框 placeholder 从"多停秒"→"停顿秒"
+- 换图按钮 hover 变橙色，更醒目
+- 进度实时解析：`[2/5]` 格式自动映射到进度条百分比
+
 ## [v1.3.0] - 2026-06-09
 
 ### Added
 
 - **多线程并行渲染**：场景级并行处理（TTS + 渲染），`ThreadPoolExecutor` 实现，默认 4 线程
   - CLI 新增 `--workers N` 参数（`1` = 串行，默认 `4`）
-  - manifest JSON 支持 `"workers": N` 字段
+  - manifest JSON 支持 `"workers": N 字段
   - WebUI 工具栏新增「线程」下拉框（1/2/4/8/16）
 - **实时进度追踪**：`ProgressTracker` 线程安全计数器 + 进度文件
   - `video_auto.py` 通过 `NARRAVID_PROGRESS_FILE` 环境变量写入进度

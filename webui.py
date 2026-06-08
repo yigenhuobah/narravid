@@ -1,5 +1,5 @@
 """
-narravid Web UI v4 — 图片上传到服务器、缩略图预览、BGM 文件选择、一键生成。
+narravid Web UI v5 — 图片上传到服务器、缩略图预览、BGM 文件选择、一键生成。
 
 用法:
   python webui.py
@@ -80,14 +80,18 @@ body{font-family:"Microsoft YaHei","PingFang SC","Noto Sans SC",sans-serif;backg
 .scene .grip{cursor:grab;color:#555;font-size:20px;padding-top:14px;user-select:none;transition:.15s}
 .scene .grip:hover{color:var(--muted)}
 .scene .idx{font-size:13px;color:var(--muted);font-weight:700;min-width:24px;padding-top:14px}
-.scene .thumb{width:128px;height:80px;border-radius:8px;border:1px solid var(--border2);background:var(--surface2) center/cover;flex-shrink:0;cursor:zoom-in;position:relative;overflow:hidden}
-.scene .thumb:hover::after{content:'🔍';position:absolute;inset:0;background:rgba(0,0,0,.55);color:#fff;font-size:22px;display:flex;align-items:center;justify-content:center}
+.scene .thumb{width:128px;height:80px;border-radius:8px;border:1px solid var(--border2);background-color:var(--surface2);background-position:center;background-size:cover;background-repeat:no-repeat;flex-shrink:0;cursor:zoom-in;position:relative;overflow:hidden;display:flex;align-items:center;justify-content:center}
+.scene .thumb img{width:100%;height:100%;object-fit:cover;border-radius:7px}
+.scene .thumb:hover::after{content:'🔍';position:absolute;inset:0;background:rgba(0,0,0,.55);color:#fff;font-size:22px;display:flex;align-items:center;justify-content:center;z-index:2}
+.scene .thumb .loader{width:20px;height:20px;border:2px solid var(--border2);border-top-color:var(--accent);border-radius:50%;animation:sp .6s linear infinite}
+.scene .thumb.has-img .loader{display:none}
 .scene .body{flex:1;display:flex;flex-direction:column;gap:8px;min-width:0}
 .scene textarea{width:100%;font-size:14px;padding:10px 12px;border:1px solid var(--border2);border-radius:8px;background:var(--surface2);color:var(--ink);resize:vertical;min-height:56px;font-family:inherit;line-height:1.5;outline:none;transition:.15s}
 .scene textarea:focus{border-color:var(--accent);background:rgba(36,36,58,.8)}
 .scene textarea::placeholder{color:var(--muted)}
 .scene .foot{display:flex;gap:8px;align-items:center;font-size:12px;flex-wrap:wrap}
 .scene .foot .path{flex:1;color:var(--muted);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:260px;font-size:11px}
+.scene .foot .path.err{color:#e74c3c}
 .scene .hold-input{width:64px;padding:5px 8px;border:1px solid var(--border2);border-radius:6px;background:var(--surface2);color:var(--ink);font-size:12px;text-align:center}
 .scene .foot .btn-sm{padding:4px 10px;font-size:11px;border:1px solid var(--border2);border-radius:6px;background:var(--surface2);color:var(--ink);cursor:pointer;transition:.15s}
 .scene .foot .btn-sm:hover{background:var(--accent);color:#fff;border-color:var(--accent)}
@@ -98,6 +102,12 @@ body{font-family:"Microsoft YaHei","PingFang SC","Noto Sans SC",sans-serif;backg
 .lb{position:fixed;inset:0;background:rgba(0,0,0,.92);z-index:200;cursor:pointer;display:flex;align-items:center;justify-content:center;animation:fadeIn .2s}
 .lb img{max-width:92vw;max-height:92vh;border-radius:12px;box-shadow:0 8px 60px rgba(0,0,0,.7)}
 @keyframes fadeIn{from{opacity:0}to{opacity:1}}
+
+/* ── Toast 提示 ── */
+.toast{position:fixed;top:20px;right:20px;padding:12px 20px;border-radius:10px;color:#fff;font-size:13px;font-weight:500;z-index:300;box-shadow:var(--shadow);animation:toastIn .3s;max-width:360px;word-break:break-all}
+.toast.error{background:linear-gradient(135deg,#c0392b,#e74c3c)}
+.toast.warn{background:linear-gradient(135deg,#d4a017,#f1c40f);color:#333}
+@keyframes toastIn{from{transform:translateX(40px);opacity:0}to{transform:translateX(0);opacity:1}}
 
 /* ── 底部状态栏 ── */
 .status-bar{position:fixed;bottom:0;left:0;right:0;background:var(--surface);border-top:1px solid var(--border2);padding:0;z-index:100;display:none}
@@ -204,6 +214,13 @@ body{font-family:"Microsoft YaHei","PingFang SC","Noto Sans SC",sans-serif;backg
 let S=[],rid=null,tmr=null,uploading=0;
 const E=id=>document.getElementById(id);
 
+/* ── Toast 提示 ── */
+function toast(msg,type){
+  let d=document.createElement('div');d.className='toast '+(type||'error');d.textContent=msg;
+  document.body.appendChild(d);
+  setTimeout(()=>{d.style.opacity='0';d.style.transition='opacity .3s';setTimeout(()=>d.remove(),300)},4000);
+}
+
 function init(){
   E('sp').oninput=()=>E('sv').textContent=parseFloat(E('sp').value).toFixed(2)+'x';
   add();add();add();
@@ -218,11 +235,12 @@ async function uploadFile(file){
         let resp=await fetch('/api/upload',{method:'POST',
           headers:{'Content-Type':'application/json'},
           body:JSON.stringify({name:file.name,data:b64})});
+        if(!resp.ok){reject('上传失败 (HTTP '+resp.status+')');return}
         let d=await resp.json();
         if(d.error)reject(d.error);else resolve(d.path);
-      }catch(e){reject(e.message)}
+      }catch(e){reject(e.message||String(e))}
     };
-    r.onerror=()=>reject('read error');
+    r.onerror=()=>reject('文件读取失败');
     r.readAsDataURL(file);
   });
 }
@@ -231,18 +249,19 @@ async function batch(){
   let inp=document.createElement('input');inp.type='file';inp.multiple=true;inp.accept='image/*';
   inp.onchange=async()=>{
     if(!inp.files.length)return;
-    let files=Array.from(inp.files);
+    let files=Array.from(inp.files).filter(f=>f.type.startsWith('image/'));
+    if(!files.length){toast('未选择有效图片文件','warn');return}
     uploading=files.length;updateStats();
     let next=0;
     for(let f of files){
-      if(!f.type.startsWith('image/')){uploading--;continue}
       let idx=S.findIndex((s,i)=>i>=next&&!s.image);
       let sidx=idx>=0?idx:S.length;
-      if(idx<0){S.push({image:'',text:'',hold:0});next=S.length-1}
-      else next=idx+1;
+      if(idx<0){S.push({image:'',text:'',hold:0,_loading:true})}
+      S[sidx]._loading=true;
+      next=(idx>=0?idx:sidx)+1;
       pain();
-      try{let path=await uploadFile(f);S[sidx].image=path;S[sidx]._name=f.name}
-      catch(e){console.error('upload',e)}
+      try{let path=await uploadFile(f);S[sidx].image=path;S[sidx]._name=f.name;S[sidx]._loading=false}
+      catch(e){console.error('upload',e);toast('上传失败: '+e);S[sidx]._loading=false;S[sidx]._error=true}
       uploading--;updateStats();pain();
     }
   };
@@ -250,17 +269,18 @@ async function batch(){
 }
 
 function handleDrop(files){
+  let imgs=Array.from(files).filter(f=>f.type.startsWith('image/'));
+  if(!imgs.length)return;
   let next=0;
-  for(let f of Array.from(files)){
-    if(!f.type.startsWith('image/'))continue;
+  for(let f of imgs){
     let idx=S.findIndex((s,i)=>i>=next&&!s.image);
     let sidx=idx>=0?idx:S.length;
-    if(idx<0){S.push({image:'',text:'',hold:0});next=S.length-1}
-    else next=idx+1;
-    pain();
-    uploading++;updateStats();
-    uploadFile(f).then(path=>{S[sidx].image=path;S[sidx]._name=f.name})
-    .catch(e=>console.error('upload',e))
+    if(idx<0){S.push({image:'',text:'',hold:0,_loading:true})}
+    S[sidx]._loading=true;
+    next=(idx>=0?idx:sidx)+1;
+    uploading++;updateStats();pain();
+    uploadFile(f).then(path=>{S[sidx].image=path;S[sidx]._name=f.name;S[sidx]._loading=false})
+    .catch(e=>{console.error('upload',e);toast('上传失败: '+e);S[sidx]._loading=false;S[sidx]._error=true})
     .finally(()=>{uploading--;updateStats();pain()});
   }
 }
@@ -271,9 +291,9 @@ function chImg(i){
   let inp=document.createElement('input');inp.type='file';inp.accept='image/*';
   inp.onchange=async()=>{
     if(!inp.files[0])return;
-    uploading++;updateStats();pain();
-    try{let path=await uploadFile(inp.files[0]);S[i].image=path;S[i]._name=inp.files[0].name}
-    catch(e){console.error(e)}
+    S[i]._loading=true;uploading++;updateStats();pain();
+    try{let path=await uploadFile(inp.files[0]);S[i].image=path;S[i]._name=inp.files[0].name;S[i]._loading=false}
+    catch(e){console.error(e);toast('换图失败: '+e);S[i]._loading=false}
     uploading--;updateStats();pain();
   };
   inp.click();
@@ -304,16 +324,20 @@ function pain(){
   let h='';
   S.forEach((s,i)=>{
     let tu=thumbUrl(i);
-    let bg=tu?' style="background-image:url('+tu+')"':'';
+    let hasImg=!!tu;
+    let cls='thumb'+(hasImg?' has-img':'');
+    let inner=hasImg?'<img src="'+tu+'" alt="场景'+(i+1)+'" onerror="this.style.display=\'none\';this.parentNode.classList.remove(\'has-img\')">':'<div class="loader"></div>';
+    if(s._loading&&!hasImg)inner='<div class="loader"></div>';
     let nm=s._name||(s.image?s.image.split('/').pop().split('\\').pop():'');
+    let pathCls='path'+(s._error?' err':'');
     h+='<div class="scene" draggable="true" ondragstart="dragS('+i+',event)" ondragover="event.preventDefault()" ondrop="dropS('+i+',event)">'
       +'<div class="grip" title="拖拽排序">⠿</div>'
       +'<div class="idx">#'+(i+1)+'</div>'
-      +'<div class="thumb"'+bg+' onclick="lightbox('+i+')"></div>'
+      +'<div class="'+cls+'" onclick="lightbox('+i+')">'+inner+'</div>'
       +'<div class="body">'
         +'<textarea placeholder="输入解说文案（按句号自动切字幕）" onchange="S['+i+'].text=this.value">'+esc(s.text)+'</textarea>'
         +'<div class="foot">'
-          +'<span class="path">'+esc(nm||'未上传图片')+'</span>'
+          +'<span class="'+pathCls+'">'+esc(nm||(s._loading?'上传中...':(s._error?'上传失败':'未上传图片')))+'</span>'
           +'<input class="hold-input" type="number" placeholder="停顿秒" value="'+(s.hold||'')+'" onchange="S['+i+'].hold=parseFloat(this.value)||0" title="场景末尾额外停留秒数">'
           +'<button class="btn-sm" onclick="chImg('+i+')">换图</button>'
           +'<button class="del" onclick="del('+i+')" title="删除场景">×</button>'
@@ -540,8 +564,7 @@ def main():
     srv = HTTPServer((args.host, args.port), H)
     url = f'http://{args.host}:{args.port}'
     print(f'narravid Web UI: {url}')
-    try: import webbrowser; webbrowser.open(url)
-    except: pass
+    print(f'  打开浏览器访问上述地址即可')
     try: srv.serve_forever()
     except KeyboardInterrupt: print('stopped'); srv.shutdown()
 

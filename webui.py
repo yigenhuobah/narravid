@@ -1,11 +1,11 @@
 """
-narravid Web UI v3 — 图片上传、缩略图预览、BGM 文件选择、一键生成。
+narravid Web UI v4 — 图片上传到服务器、缩略图预览、BGM 文件选择、一键生成。
 
 用法:
   python webui.py
   python webui.py --port 8080
 """
-import argparse, json, os, shutil, subprocess, sys, threading, time, uuid
+import argparse, base64, json, os, shutil, subprocess, sys, threading, time, uuid
 from pathlib import Path
 from http.server import HTTPServer, SimpleHTTPRequestHandler
 import urllib.parse
@@ -13,11 +13,14 @@ import urllib.parse
 ROOT = Path(__file__).resolve().parent
 SCRIPT = ROOT / 'video_auto.py'
 OUT_BASE = ROOT / 'rendered' / 'webui'
+UPLOAD_DIR = OUT_BASE / 'uploads'
 
 # 打包 exe 时自动定位自带 ffmpeg
 _ff = getattr(sys, '_MEIPASS', None)
 if _ff and (Path(_ff) / 'ffmpeg').is_dir():
     os.environ['PATH'] = str(Path(_ff) / 'ffmpeg') + os.pathsep + os.environ.get('PATH', '')
+
+UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
 
 HTML = r'''<!DOCTYPE html>
 <html lang="zh-CN">
@@ -31,7 +34,6 @@ body{font-family:"Microsoft YaHei","PingFang SC",sans-serif;background:var(--bg)
 .app{max-width:1100px;margin:0 auto;padding:24px 20px 80px}
 h1{font-size:28px;margin-bottom:2px}
 .sub{color:var(--muted);font-size:14px;margin-bottom:18px}
-
 .bar{display:flex;flex-wrap:wrap;gap:10px;align-items:flex-end;margin-bottom:14px;padding:14px 16px;background:var(--card);border:1px solid var(--border);border-radius:10px;font-size:13px}
 .bar label{font-size:11px;color:var(--muted);display:block;margin-bottom:2px}
 .bar select,.bar input{padding:6px 8px;border:1px solid var(--border);border-radius:5px;background:#fafafa;font-size:13px}
@@ -40,8 +42,8 @@ h1{font-size:28px;margin-bottom:2px}
 .btn:hover{background:#f0ede6}
 .btn.a{background:var(--accent);color:#fff;border-color:var(--accent)}
 .btn.a:hover{opacity:.9}
+.btn:disabled{opacity:.4;cursor:not-allowed}
 .row{gap:8px;display:flex;flex-wrap:wrap;align-items:center;margin-bottom:10px}
-
 .card{background:var(--card);border:1px solid var(--border);border-radius:10px;padding:12px 14px;display:flex;gap:10px;align-items:flex-start;margin-bottom:8px}
 .card .grip{cursor:grab;color:#ccc;font-size:18px;padding-top:8px;user-select:none}
 .card .n{font-size:12px;color:var(--muted);min-width:20px;padding-top:9px}
@@ -49,30 +51,30 @@ h1{font-size:28px;margin-bottom:2px}
 .card .thumb:hover::after{content:'\1F50D';position:absolute;inset:0;background:rgba(0,0,0,.5);color:#fff;font-size:20px;display:flex;align-items:center;justify-content:center}
 .card .body{flex:1;display:flex;flex-direction:column;gap:6px;min-width:0}
 .card .body textarea{width:100%;font-size:13px;padding:8px 10px;border:1px solid var(--border);border-radius:6px;background:#fafafa;resize:vertical;min-height:50px;font-family:inherit}
-.card .foot{display:flex;gap:6px;align-items:center;font-size:11px}
-.card .foot input{flex:1;padding:5px 7px;border:1px solid var(--border);border-radius:4px;background:#fafafa;font-size:11px;color:var(--muted)}
+.card .foot{display:flex;gap:6px;align-items:center;font-size:11px;flex-wrap:wrap}
+.card .foot .path{flex:1;padding:5px 7px;color:var(--muted);font-size:11px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:250px}
 .card .del{background:none;border:none;color:#c0392b;cursor:pointer;font-size:18px;opacity:.5;padding:0 4px}
 .card .del:hover{opacity:1}
-
+.card .uploading{opacity:.5}
 .lb{position:fixed;inset:0;background:rgba(0,0,0,.88);z-index:200;cursor:pointer;display:flex;align-items:center;justify-content:center}
 .lb img{max-width:92vw;max-height:92vh;border-radius:10px;box-shadow:0 4px 40px rgba(0,0,0,.5)}
-
 .status{position:fixed;bottom:0;left:0;right:0;background:#1a1a2e;color:#fff;padding:14px 20px;font-size:14px;display:none;align-items:center;gap:10px;z-index:100}
 .status .spin{width:16px;height:16px;border:2px solid rgba(255,255,255,.2);border-top-color:#fff;border-radius:50%;animation:s .6s linear infinite}
 @keyframes s{to{transform:rotate(360deg)}}
 .result{position:fixed;bottom:56px;left:50%;transform:translateX(-50%);color:#fff;padding:12px 24px;border-radius:10px;display:none;z-index:101;cursor:pointer;font-size:14px}
 .result a{color:#fff;font-weight:700}
+.upload-stats{font-size:12px;color:var(--muted)}
 </style>
 </head>
 <body>
 <div class="app">
-<h1>narravid</h1><div class="sub">拖图片到下方 → 写文案 → 点生成</div>
+<h1>narravid</h1><div class="sub">拖图片到下方 → 写文案 → 点生成 <span class="upload-stats" id="ustats"></span></div>
 
 <div class="bar">
-<div><label>音色</label><select id="v"><option value="zh-CN-XiaoxiaoNeural">Xiaoxiao(女·温)</option><option value="zh-CN-YunyangNeural">Yunyang(男·专)</option><option value="zh-CN-YunxiNeural">Yunxi(男·轻)</option></select></div>
+<div><label>音色</label><select id="v"><option value="zh-CN-XiaoxiaoNeural">Xiaoxiao(女温)</option><option value="zh-CN-YunyangNeural">Yunyang(男专)</option><option value="zh-CN-YunxiNeural">Yunxi(男轻)</option></select></div>
 <div><label>语速 <b id="sv">1.5</b></label><input type="range" id="sp" min="0.8" max="2.2" step="0.05" value="1.5" style="width:90px"></div>
 <div><label>标题</label><input id="tc" placeholder="可选" style="width:100px"></div>
-<div><label>BGM</label><input type="file" id="bgm" accept="audio/*" style="width:160px;font-size:11px"></div>
+<div><label>BGM</label><input type="file" id="bgm" accept="audio/*" style="width:150px;font-size:11px"></div>
 <div style="display:flex;align-items:flex-end"><label style="cursor:pointer;font-size:13px;display:flex;gap:4px"><input type="checkbox" id="bs" checked>烧录字幕</label></div>
 </div>
 
@@ -88,43 +90,98 @@ h1{font-size:28px;margin-bottom:2px}
 <div class="status" id="st"><div class="spin"></div><div id="sm">准备中</div><span onclick="cancel()" style="color:#e74c3c;cursor:pointer">✕</span></div>
 <div class="result" id="rs" onclick="this.style.display='none'"></div>
 <script>
-let S=[],rid=null,tmr=null;
+let S=[],rid=null,tmr=null,uploading=0;
 const E=id=>document.getElementById(id);
 
 function init(){
   E('sp').oninput=()=>E('sv').textContent=E('sp').value;
   add();add();add();
 }
-function batch(){
-  let i=document.createElement('input');i.type='file';i.multiple=true;i.accept='image/*';
-  i.onchange=()=>handleImg(i.files);i.click();
+
+async function uploadFile(file){
+  return new Promise((resolve,reject)=>{
+    let r=new FileReader();
+    r.onload=async()=>{
+      try{
+        let b64=r.result.split(',')[1];
+        let resp=await fetch('/api/upload',{method:'POST',
+          headers:{'Content-Type':'application/json'},
+          body:JSON.stringify({name:file.name,data:b64})});
+        let d=await resp.json();
+        if(d.error)reject(d.error);else resolve(d.path);
+      }catch(e){reject(e.message)}
+    };
+    r.onerror=()=>reject('read error');
+    r.readAsDataURL(file);
+  });
 }
-function add(img,txt,hold){S.push({image:img||'',text:txt||'',hold:hold||0});pain()}
-function del(i){S.splice(i,1);pain()}
-function chImg(i){
-  let inp=document.createElement('input');inp.type='file';inp.accept='image/*';
-  inp.onchange=()=>{if(inp.files[0]){S[i].image=inp.files[0].name;upImg(i,inp.files[0])}};
+
+async function batch(){
+  let inp=document.createElement('input');inp.type='file';inp.multiple=true;inp.accept='image/*';
+  inp.onchange=async()=>{
+    if(!inp.files.length)return;
+    let files=Array.from(inp.files);
+    uploading=files.length;
+    updateStats();
+    let next=0;
+    for(let f of files){
+      if(!f.type.startsWith('image/')){uploading--;continue}
+      let idx=S.findIndex((s,i)=>i>=next&&!s.image);
+      let sidx=idx>=0?idx:S.length;
+      if(idx<0){S.push({image:'',text:'',hold:0});next=S.length-1}
+      else next=idx+1;
+      pain();
+      try{
+        let path=await uploadFile(f);
+        S[sidx].image=path;
+        S[sidx]._name=f.name;
+      }catch(e){console.error('upload',e)}
+      uploading--;
+      updateStats();
+      pain();
+    }
+  };
   inp.click();
 }
-let imgCache={};
-function upImg(i,file){
-  let r=new FileReader();r.onload=()=>{imgCache[S[i].image]=r.result;pain()};
-  if(file)r.readAsDataURL(file);
-}
-function handleImg(files){
+
+function handleDrop(files){
   let next=0;
   for(let f of Array.from(files)){
     if(!f.type.startsWith('image/'))continue;
     let idx=S.findIndex((s,i)=>i>=next&&!s.image);
-    if(idx>=0){S[idx].image=f.name;upImg(idx,f);next=idx+1}
-    else{S.push({image:f.name,text:'',hold:0});upImg(S.length-1,f)}
+    let sidx=idx>=0?idx:S.length;
+    if(idx<0){S.push({image:'',text:'',hold:0});next=S.length-1}
+    else next=idx+1;
+    pain();
+    uploading++;
+    updateStats();
+    uploadFile(f).then(path=>{
+      S[sidx].image=path;S[sidx]._name=f.name;
+    }).catch(e=>console.error('upload',e)).finally(()=>{
+      uploading--;updateStats();pain();
+    });
   }
-  pain();
+}
+
+function add(img,txt,hold){S.push({image:img||'',text:txt||'',hold:hold||0});pain()}
+function del(i){S.splice(i,1);pain()}
+function chImg(i){
+  let inp=document.createElement('input');inp.type='file';inp.accept='image/*';
+  inp.onchange=async()=>{
+    if(!inp.files[0])return;
+    uploading++;updateStats();pain();
+    try{let path=await uploadFile(inp.files[0]);S[i].image=path;S[i]._name=inp.files[0].name}
+    catch(e){console.error(e)}
+    uploading--;updateStats();pain();
+  };
+  inp.click();
+}
+function updateStats(){
+  E('ustats').textContent=uploading>0?`(${uploading} 张上传中...)`:'';
 }
 function thumbUrl(i){
   let img=S[i].image;
   if(!img)return'';
-  if(imgCache[img])return imgCache[img];
   return'/thumb?path='+encodeURIComponent(img);
 }
 function lightbox(i){
@@ -141,15 +198,15 @@ function pain(){
   S.forEach((s,i)=>{
     let tu=thumbUrl(i);
     let bg=tu?' style="background-image:url('+tu+')"':'';
-    let path=s.image||'';
+    let nm=s._name||(s.image?s.image.split('/').pop().split('\\').pop():'');
     h+='<div class="card" draggable="true" ondragstart="dragS('+i+',event)" ondragover="event.preventDefault()" ondrop="dropS('+i+',event)">'
       +'<div class="grip">\u281F</div><div class="n">#'+(i+1)+'</div>'
       +'<div class="thumb"'+bg+' onclick="lightbox('+i+')"></div>'
       +'<div class="body">'
         +'<textarea placeholder="解说文案（按句号切字幕）。留空=只展示图片" onchange="S['+i+'].text=this.value">'+esc(s.text)+'</textarea>'
         +'<div class="foot">'
-          +'<span>'+esc(path)+'</span>'
-          +'<input type="number" placeholder="多停秒" style="width:60px" value="'+(s.hold||'')+'" onchange="S['+i+'].hold=parseFloat(this.value)||0">'
+          +'<span class="path">'+esc(nm||'未上传')+'</span>'
+          +'<input type="number" placeholder="多停秒" style="width:56px" value="'+(s.hold||'')+'" onchange="S['+i+'].hold=parseFloat(this.value)||0">'
           +'<button class="btn" onclick="chImg('+i+')" style="font-size:11px;padding:3px 8px">换图</button>'
           +'<button class="del" onclick="del('+i+')">×</button>'
         +'</div>'
@@ -162,6 +219,7 @@ function esc(s){return(s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace
 async function render(){
   let valid=S.filter(s=>s.image);
   if(!valid.length){alert('请至少添加一张图片');return}
+  if(uploading>0){alert('还有图片在上传中，请稍候');return}
   let bgm=null;
   if(E('bgm').files.length>0)bgm=E('bgm').files[0].name;
   let m={title:'narravid',width:1920,height:1080,tts_engine:'edge',
@@ -194,7 +252,7 @@ function done(err,video){
 }
 function cancel(){if(rid)fetch('/api/cancel/'+rid,{method:'POST'});clearTimeout(tmr);E('st').style.display='none';E('rb').disabled=false;rid=null}
 document.addEventListener('dragover',e=>e.preventDefault());
-document.addEventListener('drop',e=>{e.preventDefault();if(e.dataTransfer.files.length)handleImg(e.dataTransfer.files)});
+document.addEventListener('drop',e=>{e.preventDefault();if(e.dataTransfer.files.length)handleDrop(e.dataTransfer.files)});
 init();
 </script>
 </body>
@@ -212,9 +270,8 @@ class H(SimpleHTTPRequestHandler):
             img = qs.get('path', [None])[0]
             if img:
                 fp = Path(img)
-                # also try relative to cwd and ROOT
                 if not fp.is_absolute():
-                    for base in [Path.cwd(), ROOT, ROOT / 'examples-assets']:
+                    for base in [Path.cwd(), ROOT]:
                         cand = base / fp
                         if cand.exists(): fp = cand; break
                 if fp.exists():
@@ -245,22 +302,27 @@ class H(SimpleHTTPRequestHandler):
         try:
             self._do_POST_impl()
         except Exception as e:
+            import traceback
+            traceback.print_exc()
             self._json({'error': f'server error: {e}'}, 500)
 
     def _do_POST_impl(self):
         p = urllib.parse.urlparse(self.path)
-        length = int(self.headers.get('Content-Length',0))
+        length = int(self.headers.get('Content-Length', 0))
         body = self.rfile.read(length) if length else b''
-        if p.path == '/api/render':
+
+        if p.path == '/api/upload':
             data = json.loads(body)
-            m = data.get('manifest',{})
-            # 把所有图片路径转为绝对路径，避免 video_auto.py 解析错
-            for s in m.get('scenes',[]):
-                img = s.get('image','')
-                if img and not Path(img).is_absolute():
-                    resolved = Path(img).resolve()
-                    if resolved.exists():
-                        s['image'] = str(resolved)
+            name = data.get('name', 'image.png')
+            b64 = data.get('data', '')
+            raw = base64.b64decode(b64)
+            fp = UPLOAD_DIR / f'{uuid.uuid4().hex}_{name}'
+            fp.write_bytes(raw)
+            self._json({'path': str(fp.resolve())})
+
+        elif p.path == '/api/render':
+            data = json.loads(body)
+            m = data.get('manifest', {})
             bgm = data.get('bgm')
             tc = data.get('title_card')
             rid = data.get('render_id', str(uuid.uuid4()))
@@ -268,9 +330,14 @@ class H(SimpleHTTPRequestHandler):
             mp = out / 'manifest.json'
             mp.write_text(json.dumps(m, ensure_ascii=False, indent=2), encoding='utf-8')
             cmd = [sys.executable, str(SCRIPT), str(mp), '--output-dir', str(out)]
-            if bgm: cmd += ['--bgm', bgm]
+            if bgm:
+                bgm_path = Path(bgm)
+                if not bgm_path.is_absolute():
+                    bgm_path = UPLOAD_DIR / bgm_path
+                if bgm_path.exists():
+                    cmd += ['--bgm', str(bgm_path.resolve())]
             if tc: cmd += ['--title-card', tc]
-            if not m.get('burn_subtitles',True): cmd += ['--no-burn']
+            if not m.get('burn_subtitles', True): cmd += ['--no-burn']
             proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, cwd=str(ROOT))
             JOBS[rid] = {'proc': proc, 'progress': 'TTS 生成中...', 'video': '', 'srt': ''}
             def mon():
@@ -279,25 +346,27 @@ class H(SimpleHTTPRequestHandler):
                 try:
                     proc.wait(timeout=600)
                     mp4s = sorted(out.glob('*.mp4'))
-                    if mp4s: j['video'] = '/' + str(mp4s[0].relative_to(ROOT)).replace('\\','/')
+                    if mp4s: j['video'] = '/' + str(mp4s[0].relative_to(ROOT)).replace('\\', '/')
                     j['progress'] = '完成'
                 except subprocess.TimeoutExpired:
                     proc.kill(); j['progress'] = '超时'
             threading.Thread(target=mon, daemon=True).start()
             self._json({'render_id': rid})
+
         elif p.path.startswith('/api/cancel/'):
             rid = p.path.split('/')[-1]
             j = JOBS.get(rid)
             if j and j['proc']: j['proc'].kill()
-            self._json({'status':'ok'})
+            self._json({'status': 'ok'})
+
         else:
-            self._json({'error':'not found'}, 404)
+            self._json({'error': 'not found'}, 404)
 
     def _html(self, html):
-        self.send_response(200); self.send_header('Content-Type','text/html; charset=utf-8'); self.end_headers()
+        self.send_response(200); self.send_header('Content-Type', 'text/html; charset=utf-8'); self.end_headers()
         self.wfile.write(html.encode('utf-8'))
     def _json(self, data, code=200):
-        self.send_response(code); self.send_header('Content-Type','application/json; charset=utf-8'); self.end_headers()
+        self.send_response(code); self.send_header('Content-Type', 'application/json; charset=utf-8'); self.end_headers()
         self.wfile.write(json.dumps(data, ensure_ascii=False).encode('utf-8'))
     def _file(self, fp, ct):
         self.send_response(200); self.send_header('Content-Type', ct)
@@ -310,14 +379,12 @@ def main():
     ap = argparse.ArgumentParser(description='narravid Web UI')
     ap.add_argument('--port', type=int, default=5000); ap.add_argument('--host', default='127.0.0.1')
     args = ap.parse_args()
-    OUT_BASE.mkdir(parents=True, exist_ok=True)
+    OUT_BASE.mkdir(parents=True, exist_ok=True); UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
     srv = HTTPServer((args.host, args.port), H)
     url = f'http://{args.host}:{args.port}'
     print(f'narravid Web UI: {url}')
-    try:
-        import webbrowser; webbrowser.open(url)
-    except Exception:
-        pass
+    try: import webbrowser; webbrowser.open(url)
+    except: pass
     try: srv.serve_forever()
     except KeyboardInterrupt: print('stopped'); srv.shutdown()
 

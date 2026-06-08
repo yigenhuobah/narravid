@@ -6,10 +6,12 @@ narravid — 图片 + JSON 文案 → 解说视频，一键自动生成。
   python video_auto.py manifest.json --voice zh-CN-YunyangNeural --speed 1.5
   python video_auto.py manifest.json --bgm music.mp3 --output-dir ./out
   python video_auto.py manifest.json --title-card "魔神任务分析" --no-burn
+  python video_auto.py manifest.json --workers 8
 
 特性:
   - Edge TTS / 系统 TTS 自动切换
   - TTS 失败自动重试
+  - 多线程并行处理场景（TTS + 渲染）
   - 可选 BGM + 自动闪避
   - 可选自动标题页
   - CLI 参数覆盖 manifest
@@ -23,18 +25,16 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import threading
 import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
-# ── 打包 exe 时自动定位自带 ffmpeg ──────────────────────────────
-def _setup_bundled_ffmpeg():
-    base = getattr(sys, '_MEIPASS', None)
-    if base:
-        bundled = Path(base) / 'ffmpeg'
-        if bundled.is_dir():
-            os.environ['PATH'] = str(bundled) + os.pathsep + os.environ.get('PATH', '')
-
-_setup_bundled_ffmpeg()
+# ── 统一使用 _bundled_ffmpeg 模块定位自带 ffmpeg ──────────────────
+try:
+    import _bundled_ffmpeg
+except ImportError:
+    pass
 
 DEFAULT_W = 1920
 DEFAULT_H = 1080
@@ -44,6 +44,7 @@ DEFAULT_SYSTEM_VOICE = 'Microsoft Huihui Desktop'
 DEFAULT_EDGE_VOICE = 'zh-CN-XiaoxiaoNeural'
 DEFAULT_SPEECH_SPEED = 1.5
 MAX_TTS_RETRIES = 2
+DEFAULT_WORKERS = 4
 
 # ── helpers ──────────────────────────────────────────────────────
 
@@ -72,13 +73,16 @@ def srt_ts(sec: float) -> str:
 
 
 def split_sentences(text: str):
+    """按中英文标点分句，支持 。！？；!?; 等句末标点"""
     text = text.replace('\r', '').replace('\n', '').strip()
     if not text:
         return []
+    # 句末标点集合：中文句号、感叹号、问号、分号 + 英文对应
+    sentence_enders = set('。！？；!?;')
     chunks, cur = [], ''
     for ch in text:
         cur += ch
-        if ch == '。':
+        if ch in sentence_enders:
             if cur.strip():
                 chunks.append(cur.strip())
             cur = ''
@@ -190,15 +194,15 @@ def synthesize_audio_with_retry(text: str, raw_audio_path: Path, engine: str, vo
                 return 'edge'
             except subprocess.CalledProcessError:
                 if attempt < MAX_TTS_RETRIES:
-                    print(f'     retry {attempt+1}/{MAX_TTS_RETRIES} ...')
                     time.sleep(3)
                 else:
-                    print('     edge-tts failed, falling back to system TTS')
-                    synthesize_system_tts(text, raw_audio_path.with_suffix('.raw.wav'), voice=DEFAULT_SYSTEM_VOICE, rate=rate, volume=volume)
-                    # convert to same format
-                    run(['ffmpeg', '-y', '-i', str(raw_audio_path.with_suffix('.raw.wav')),
-                         '-ar', '24000', '-ac', '1', str(raw_audio_path)], silent=True)
-                    return 'system'
+                    try:
+                        synthesize_system_tts(text, raw_audio_path.with_suffix('.raw.wav'), voice=DEFAULT_SYSTEM_VOICE, rate=rate, volume=volume)
+                        run(['ffmpeg', '-y', '-i', str(raw_audio_path.with_suffix('.raw.wav')),
+                             '-ar', '24000', '-ac', '1', str(raw_audio_path)], silent=True)
+                        return 'system'
+                    except Exception as fallback_err:
+                        raise RuntimeError(f'edge-tts 和 system TTS 均失败: {fallback_err}') from fallback_err
     elif engine == 'system':
         synthesize_system_tts(text, raw_audio_path, voice=voice, rate=rate, volume=volume)
         return 'system'
@@ -260,6 +264,7 @@ def generate_title_card(title: str, out_path: Path, width: int, height: int):
         import matplotlib
         matplotlib.use('Agg')
         import matplotlib.pyplot as plt
+        import matplotlib.font_manager as fm
     except ImportError:
         print('  [warn] matplotlib not available, skipping title card')
         return None
@@ -270,10 +275,11 @@ def generate_title_card(title: str, out_path: Path, width: int, height: int):
     ax.set_xlim(0, width)
     ax.set_ylim(0, height)
     ax.axis('off')
+    zh_fonts = ['Microsoft YaHei', 'SimHei', 'PingFang SC', 'Noto Sans CJK SC', 'WenQuanYi Micro Hei', 'sans-serif']
     ax.text(width / 2, height / 2 + 20, title, fontsize=48, fontweight='bold',
-            color='white', ha='center', va='center', fontfamily='sans-serif')
+            color='white', ha='center', va='center', fontfamily=zh_fonts)
     ax.text(width / 2, height / 2 - 50, 'narravid', fontsize=18,
-            color='#888888', ha='center', va='center', fontfamily='sans-serif')
+            color='#888888', ha='center', va='center', fontfamily=zh_fonts)
     plt.tight_layout(pad=0)
     fig.savefig(out_path, dpi=100, facecolor=fig.get_facecolor())
     plt.close(fig)
@@ -289,9 +295,98 @@ def mix_bgm(voice_audio: Path, bgm_path: Path, out_path: Path, duck_ratio: float
          '-i', str(voice_audio),
          '-stream_loop', '-1', '-i', str(bgm_path),
          '-filter_complex',
-         f'[1:a]volume=0.15[a1];[0:a][a1]amix=inputs=2:duration=first:dropout_transition=0.5',
+         f'[1:a]volume={duck_ratio:.2f}[a1];[0:a][a1]amix=inputs=2:duration=first:dropout_transition=0.5',
          '-t', f'{dur:.3f}', '-ar', '24000', '-ac', '1',
          str(out_path)], silent=True)
+
+
+# ── 并行场景处理 ────────────────────────────────────────────────
+
+class ProgressTracker:
+    """线程安全的进度追踪器"""
+
+    def __init__(self, total: int, progress_file: str = None):
+        self.total = total
+        self.progress_file = progress_file
+        self._completed = 0
+        self._lock = threading.Lock()
+
+    def report(self, idx: int, msg: str):
+        """报告当前进度（线程安全）"""
+        with self._lock:
+            print(f'[{idx}/{self.total}] {msg}', flush=True)
+            self._write_progress(f'[{idx}/{self.total}] {msg}')
+
+    def complete(self, idx: int, msg: str):
+        """标记完成并更新计数"""
+        with self._lock:
+            self._completed += 1
+            print(f'[{idx}/{self.total}] {msg} ({self._completed}/{self.total} done)', flush=True)
+            self._write_progress(f'[{self._completed}/{self.total}] {msg}')
+
+    def _write_progress(self, msg: str):
+        if self.progress_file:
+            try:
+                Path(self.progress_file).write_text(msg, encoding='utf-8')
+            except Exception:
+                pass
+
+
+def process_single_scene(idx: int, scene: dict, project_root: Path,
+                         tts_engine: str, voice: str, rate: int, volume: int,
+                         speech_speed: float, pad_sec: float,
+                         width: int, height: int, fps: int, burn_subtitles: bool,
+                         tmp_dir: Path, audio_dir: Path, scene_dir: Path,
+                         progress: ProgressTracker):
+    """处理单个场景：TTS → 音频处理 → 字幕 → 渲染。供线程池调用。"""
+
+    text = str(scene.get('text', '')).strip()
+    image = Path(scene['image'])
+    if not image.is_absolute():
+        image = (project_root / image).resolve()
+    if not image.exists():
+        raise FileNotFoundError(f'scene {idx} 图片不存在: {image}')
+
+    hold_sec = float(scene.get('hold_sec', 0.0))
+    raw_audio = tmp_dir / (f'{idx:03d}.raw.mp3' if tts_engine == 'edge' else f'{idx:03d}.raw.wav')
+    wav = audio_dir / f'{idx:03d}.wav'
+    srt = tmp_dir / f'{idx:03d}.srt'
+    mp4 = scene_dir / f'{idx:03d}.mp4'
+
+    # ── TTS ──
+    if text:
+        progress.report(idx, 'TTS ...')
+        used_engine = synthesize_audio_with_retry(text, raw_audio, tts_engine, voice, rate, volume)
+        narration_duration = process_audio(raw_audio, wav, speech_speed, pad_sec)
+        progress.report(idx, f'TTS OK ({narration_duration:.1f}s, {used_engine})')
+    else:
+        narration_duration = 0.0
+        progress.report(idx, 'Hold ...')
+        make_silent_audio(wav, hold_sec or 2.0)
+        progress.report(idx, 'Hold OK')
+
+    # ── 字幕 + 渲染 ──
+    scene_duration = narration_duration + hold_sec if narration_duration > 0 else (hold_sec or ffprobe_duration(wav))
+    segments = build_sentence_segments(text, narration_duration, 0.0) if text else []
+    make_scene_srt(segments, srt)
+
+    vf = (f"scale={width}:{height}:force_original_aspect_ratio=decrease,"
+          f"pad={width}:{height}:(ow-iw)/2:(oh-ih)/2:color=black")
+    if burn_subtitles and segments:
+        vf += ',' + subtitle_filter_arg(srt)
+
+    progress.report(idx, 'Render ...')
+    run(['ffmpeg', '-y', '-loop', '1', '-i', str(image), '-i', str(wav),
+         '-vf', vf, '-r', str(fps), '-t', f'{scene_duration:.3f}', '-shortest',
+         '-c:v', 'libx264', '-pix_fmt', 'yuv420p', '-c:a', 'aac', '-b:a', '192k',
+         str(mp4)], silent=True)
+    progress.complete(idx, 'Render OK')
+
+    return {
+        'idx': idx, 'image': str(image), 'text': text,
+        'narration_duration': narration_duration, 'hold_sec': hold_sec,
+        'scene_duration': scene_duration, 'mp4': str(mp4), 'audio': str(wav),
+    }
 
 
 # ── main ─────────────────────────────────────────────────────────
@@ -306,6 +401,7 @@ def main():
   python video_auto.py demo.json --voice zh-CN-YunyangNeural --speed 1.4
   python video_auto.py demo.json --bgm bgm.mp3 --title-card "数据分析"
   python video_auto.py demo.json --output-dir ./out --no-burn
+  python video_auto.py demo.json --workers 8
         ''')
     parser.add_argument('manifest', help='manifest JSON 文件路径')
     parser.add_argument('--voice', help='TTS 音色名称 (如 zh-CN-YunyangNeural)')
@@ -315,6 +411,8 @@ def main():
     parser.add_argument('--title-card', help='自动生成标题页 (输入标题文字)')
     parser.add_argument('--no-burn', action='store_true', help='不烧录字幕到视频')
     parser.add_argument('--engine', choices=['edge', 'system'], help='TTS 引擎: edge 或 system')
+    parser.add_argument('--workers', type=int, default=0,
+                        help=f'并行处理线程数 (默认 {DEFAULT_WORKERS}, 1=串行)')
 
     args = parser.parse_args()
 
@@ -326,8 +424,8 @@ def main():
     width = int(manifest.get('width', DEFAULT_W))
     height = int(manifest.get('height', DEFAULT_H))
     fps = int(manifest.get('fps', DEFAULT_FPS))
-    tts_engine = args.engine or ('edge' if edge_tts_available() else 'system')
-    voice = args.voice or (DEFAULT_EDGE_VOICE if tts_engine == 'edge' else DEFAULT_SYSTEM_VOICE)
+    tts_engine = args.engine or manifest.get('tts_engine') or ('edge' if edge_tts_available() else 'system')
+    voice = args.voice or manifest.get('voice') or (DEFAULT_EDGE_VOICE if tts_engine == 'edge' else DEFAULT_SYSTEM_VOICE)
     rate = int(manifest.get('rate', 0))
     volume = int(manifest.get('volume', 100))
     speech_speed = args.speed or float(manifest.get('speech_speed', DEFAULT_SPEECH_SPEED))
@@ -335,13 +433,16 @@ def main():
     burn_subtitles = not args.no_burn and bool(manifest.get('burn_subtitles', True))
     bgm_path = args.bgm
     title_card_text = args.title_card
+    workers = args.workers or int(manifest.get('workers', DEFAULT_WORKERS))
+    # 至少 1 个 worker
+    workers = max(1, workers)
 
     out_dir = Path(args.output_dir) if args.output_dir else Path(manifest.get('output_dir', project_root / 'rendered' / manifest_path.stem))
     if not out_dir.is_absolute():
         if args.output_dir:
-            out_dir = Path.cwd() / out_dir  # CLI arg relative to CWD
+            out_dir = Path.cwd() / out_dir
         else:
-            out_dir = (project_root / out_dir).resolve()  # manifest relative to manifest dir
+            out_dir = (project_root / out_dir).resolve()
     out_dir = out_dir.resolve()
     tmp_dir = out_dir / '_tmp'
     scene_dir = out_dir / 'scenes'
@@ -349,19 +450,29 @@ def main():
     for d in [out_dir, tmp_dir, scene_dir, audio_dir]:
         d.mkdir(parents=True, exist_ok=True)
 
-    # title card
+    # 进度文件：供 WebUI 实时读取进度
+    progress_file = os.environ.get('NARRAVID_PROGRESS_FILE')
+
+    def update_progress(msg):
+        if progress_file:
+            try:
+                Path(progress_file).write_text(msg, encoding='utf-8')
+            except Exception:
+                pass
+
+    # title card（串行，因为只有一个）
     title_card_path = None
     if title_card_text:
         title_card_path = tmp_dir / 'title_card.png'
         print('[0] Title card: ' + title_card_text)
+        update_progress('生成标题页...')
         generate_title_card(title_card_text, title_card_path, width, height)
 
     scene_infos = []
     total_scenes = len(manifest['scenes']) + (1 if title_card_path else 0)
-    idx = 0
 
+    # ── 标题页场景（串行） ──
     if title_card_path:
-        idx += 1
         wav = audio_dir / '000.wav'
         srt = tmp_dir / '000.srt'
         mp4 = scene_dir / '000.mp4'
@@ -377,62 +488,70 @@ def main():
             'text': '', 'narration_duration': 0, 'hold_sec': 0,
             'scene_duration': 3.0, 'mp4': str(mp4), 'audio': str(wav),
         })
-        print(f'  Title card OK ({total_scenes} scenes total)')
+        print(f'  Title card OK ({total_scenes} scenes total, workers={workers})')
 
-    for sidx, scene in enumerate(manifest['scenes'], 1):
-        idx += 1
-        text = str(scene.get('text', '')).strip()
-        image = Path(scene['image'])
-        if not image.is_absolute():
-            image = (project_root / image).resolve()
-        if not image.exists():
-            raise FileNotFoundError(f'scene {sidx} 图片不存在: {image}')
+    # ── 并行处理所有场景 ──
+    num_scenes = len(manifest['scenes'])
+    progress = ProgressTracker(total_scenes, progress_file)
 
-        hold_sec = float(scene.get('hold_sec', 0.0))
-        raw_audio = tmp_dir / (f'{idx:03d}.raw.mp3' if tts_engine == 'edge' else f'{idx:03d}.raw.wav')
-        wav = audio_dir / f'{idx:03d}.wav'
-        srt = tmp_dir / f'{idx:03d}.srt'
-        mp4 = scene_dir / f'{idx:03d}.mp4'
+    if workers > 1 and num_scenes > 1:
+        print(f'\n并行处理 {num_scenes} 个场景 (workers={workers}) ...')
+        update_progress(f'并行处理 {num_scenes} 个场景...')
 
-        if text:
-            print(f'[{idx}/{total_scenes}] TTS ... ', end='', flush=True)
-            used_engine = synthesize_audio_with_retry(text, raw_audio, tts_engine, voice, rate, volume)
-            narration_duration = process_audio(raw_audio, wav, speech_speed, pad_sec)
-            print(f'OK ({narration_duration:.1f}s, {used_engine})')
-        else:
-            narration_duration = 0.0
-            print(f'[{idx}/{total_scenes}] Hold ... ', end='', flush=True)
-            make_silent_audio(wav, hold_sec or 2.0)
-            print('OK')
+        # 构建 scene 任务参数（idx 从 1 开始，与标题页 0 不冲突）
+        scene_tasks = []
+        for sidx, scene in enumerate(manifest['scenes'], 1):
+            scene_tasks.append((sidx, scene))
 
-        scene_duration = narration_duration + hold_sec if narration_duration > 0 else (hold_sec or ffprobe_duration(wav))
-        segments = build_sentence_segments(text, narration_duration, 0.0) if text else []
-        make_scene_srt(segments, srt)
+        # 用字典收集结果，保证按 idx 排序
+        results = {}
+        with ThreadPoolExecutor(max_workers=workers) as executor:
+            future_to_idx = {}
+            for sidx, scene in scene_tasks:
+                future = executor.submit(
+                    process_single_scene,
+                    sidx, scene, project_root,
+                    tts_engine, voice, rate, volume,
+                    speech_speed, pad_sec,
+                    width, height, fps, burn_subtitles,
+                    tmp_dir, audio_dir, scene_dir,
+                    progress,
+                )
+                future_to_idx[future] = sidx
 
-        vf = (f"scale={width}:{height}:force_original_aspect_ratio=decrease,"
-              f"pad={width}:{height}:(ow-iw)/2:(oh-ih)/2:color=black")
-        if burn_subtitles and segments:
-            vf += ',' + subtitle_filter_arg(srt)
+            for future in as_completed(future_to_idx):
+                sidx = future_to_idx[future]
+                try:
+                    info = future.result()
+                    results[sidx] = info
+                except Exception as e:
+                    print(f'[FATAL] scene {sidx} 失败: {e}')
+                    raise
 
-        print(f'[{idx}/{total_scenes}] Render ... ', end='', flush=True)
-        run(['ffmpeg', '-y', '-loop', '1', '-i', str(image), '-i', str(wav),
-             '-vf', vf, '-r', str(fps), '-t', f'{scene_duration:.3f}', '-shortest',
-             '-c:v', 'libx264', '-pix_fmt', 'yuv420p', '-c:a', 'aac', '-b:a', '192k',
-             str(mp4)], silent=True)
-        print('OK')
+        # 按 idx 排序，保证 concat 顺序正确
+        for sidx in sorted(results.keys()):
+            scene_infos.append(results[sidx])
 
-        scene_infos.append({
-            'idx': idx, 'image': str(image), 'text': text,
-            'narration_duration': narration_duration, 'hold_sec': hold_sec,
-            'scene_duration': scene_duration, 'mp4': str(mp4), 'audio': str(wav),
-        })
+    else:
+        # 串行模式（workers=1 或只有 1 个场景）
+        for sidx, scene in enumerate(manifest['scenes'], 1):
+            info = process_single_scene(
+                sidx, scene, project_root,
+                tts_engine, voice, rate, volume,
+                speech_speed, pad_sec,
+                width, height, fps, burn_subtitles,
+                tmp_dir, audio_dir, scene_dir,
+                progress,
+            )
+            scene_infos.append(info)
 
-    # concat
+    # ── concat（必须等所有场景完成） ──
     print(f'\nConcat {len(scene_infos)} scenes ... ', end='', flush=True)
+    update_progress('合并场景...')
     concat_txt = tmp_dir / 'concat.txt'
     lines = []
     for s in scene_infos:
-        p = str(Path(s['mp4']).resolve()).replace("'", r"'\\''")
+        p = str(Path(s['mp4']).resolve()).replace("'", "'\\''")
         lines.append(f"file '{p}'")
     concat_txt.write_text('\n'.join(lines), encoding='utf-8')
 
@@ -444,8 +563,8 @@ def main():
     # BGM mixing
     if bgm_path and Path(bgm_path).exists():
         print('Mix BGM ... ', end='', flush=True)
+        update_progress('混入 BGM...')
         voice_total = audio_dir / '_narration_full.wav'
-        # extract audio from final video
         run(['ffmpeg', '-y', '-i', str(final_mp4), '-vn', '-ar', '24000', '-ac', '1',
              str(voice_total)], silent=True)
         mixed_audio = tmp_dir / 'mixed_audio.wav'
@@ -462,6 +581,7 @@ def main():
     make_global_srt(scene_infos, final_srt)
 
     total_dur = round(sum(s['scene_duration'] for s in scene_infos), 3)
+    update_progress('完成')
     print(f'\n完成 — {len(scene_infos)} 个场景, {total_dur}s')
     print(f'  视频 : {final_mp4}')
     print(f'  字幕 : {final_srt}')

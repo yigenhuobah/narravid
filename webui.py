@@ -15,12 +15,16 @@ SCRIPT = ROOT / 'video_auto.py'
 OUT_BASE = ROOT / 'rendered' / 'webui'
 UPLOAD_DIR = OUT_BASE / 'uploads'
 
-# 打包 exe 时自动定位自带 ffmpeg
-_ff = getattr(sys, '_MEIPASS', None)
-if _ff and (Path(_ff) / 'ffmpeg').is_dir():
-    os.environ['PATH'] = str(Path(_ff) / 'ffmpeg') + os.pathsep + os.environ.get('PATH', '')
+# 统一使用 _bundled_ffmpeg 模块定位自带 ffmpeg
+try:
+    import _bundled_ffmpeg
+except ImportError:
+    pass
 
 UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
+
+# ── 允许 /thumb 访问的目录白名单 ─────────────────────────────────
+THUMB_ALLOWED_DIRS = [UPLOAD_DIR.resolve(), (ROOT / 'examples-assets').resolve()]
 
 HTML = r'''<!DOCTYPE html>
 <html lang="zh-CN">
@@ -76,6 +80,7 @@ h1{font-size:28px;margin-bottom:2px}
 <div><label>标题</label><input id="tc" placeholder="可选" style="width:100px"></div>
 <div><label>BGM</label><input type="file" id="bgm" accept="audio/*" style="width:150px;font-size:11px"></div>
 <div style="display:flex;align-items:flex-end"><label style="cursor:pointer;font-size:13px;display:flex;gap:4px"><input type="checkbox" id="bs" checked>烧录字幕</label></div>
+<div><label>线程</label><select id="wk"><option value="1">1 (串行)</option><option value="2">2</option><option value="4" selected>4 (默认)</option><option value="8">8</option><option value="16">16</option></select></div>
 </div>
 
 <div class="row">
@@ -90,7 +95,7 @@ h1{font-size:28px;margin-bottom:2px}
 <div class="status" id="st"><div class="spin"></div><div id="sm">准备中</div><span onclick="cancel()" style="color:#e74c3c;cursor:pointer">✕</span></div>
 <div class="result" id="rs" onclick="this.style.display='none'"></div>
 <script>
-let S=[],rid=null,tmr=null,uploading=0;
+let S=[],rid=null,tmr=null,uploading=0,bgmPath=null;
 const E=id=>document.getElementById(id);
 
 function init(){
@@ -220,9 +225,17 @@ async function render(){
   let valid=S.filter(s=>s.image);
   if(!valid.length){alert('请至少添加一张图片');return}
   if(uploading>0){alert('还有图片在上传中，请稍候');return}
+
+  // 上传 BGM 文件（如果选了的话）
   let bgm=null;
-  if(E('bgm').files.length>0)bgm=E('bgm').files[0].name;
-  let m={title:'narravid',width:1920,height:1080,tts_engine:'edge',
+  if(E('bgm').files.length>0){
+    try{
+      E('sm').textContent='上传 BGM...';
+      bgm=await uploadFile(E('bgm').files[0]);
+    }catch(e){alert('BGM 上传失败: '+e);return}
+  }
+
+  let m={title:'narravid',width:1920,height:1080,tts_engine:'edge',workers:parseInt(E('wk').value),
     voice:E('v').value,speech_speed:parseFloat(E('sp').value),burn_subtitles:E('bs').checked,
     scenes:valid.map(s=>({image:s.image,text:s.text.trim(),hold_sec:s.hold||0}))};
   let body={manifest:m,bgm:bgm,title_card:E('tc').value.trim()||null};
@@ -269,7 +282,11 @@ class H(SimpleHTTPRequestHandler):
             qs = urllib.parse.parse_qs(p.query)
             img = qs.get('path', [None])[0]
             if img:
-                fp = Path(img)
+                fp = Path(img).resolve()
+                # 安全检查：只允许白名单目录下的文件
+                allowed = any(str(fp).startswith(str(d)) for d in THUMB_ALLOWED_DIRS)
+                if not allowed:
+                    self._json({'error': 'forbidden'}, 403); return
                 if not fp.is_absolute():
                     for base in [Path.cwd(), ROOT]:
                         cand = base / fp
@@ -283,7 +300,15 @@ class H(SimpleHTTPRequestHandler):
             j = JOBS.get(rid)
             if not j: self._json({'error':'not found'}, 404); return
             done = not (j['proc'] and j['proc'].poll() is None)
-            resp = {'done': done, 'progress': j.get('progress',''), 'video': j.get('video'), 'srt': j.get('srt')}
+            # 从进度文件读取实时进度
+            progress = j.get('progress', '')
+            pf = j.get('progress_file')
+            if pf and Path(pf).exists():
+                try:
+                    progress = Path(pf).read_text(encoding='utf-8').strip() or progress
+                except Exception:
+                    pass
+            resp = {'done': done, 'progress': progress, 'video': j.get('video'), 'srt': j.get('srt')}
             if done and j['proc']:
                 if j['proc'].returncode == 0:
                     resp['video'] = j.get('video','')
@@ -338,16 +363,34 @@ class H(SimpleHTTPRequestHandler):
                     cmd += ['--bgm', str(bgm_path.resolve())]
             if tc: cmd += ['--title-card', tc]
             if not m.get('burn_subtitles', True): cmd += ['--no-burn']
-            proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, cwd=str(ROOT))
-            JOBS[rid] = {'proc': proc, 'progress': 'TTS 生成中...', 'video': '', 'srt': ''}
+            if m.get('tts_engine'): cmd += ['--engine', m['tts_engine']]
+            if m.get('voice'): cmd += ['--voice', m['voice']]
+            if m.get('speech_speed'): cmd += ['--speed', str(m['speech_speed'])]
+            wk = m.get('workers', 4)
+            if wk and wk != 1: cmd += ['--workers', str(wk)]
+            # stdout → DEVNULL 避免管道死锁；stderr → PIPE 用于错误收集
+            # 实时解析 stdout 进度通过临时进度文件实现
+            progress_file = out / '_progress.txt'
+            progress_file.write_text('TTS 生成中...', encoding='utf-8')
+            # 用环境变量传递进度文件路径，让 video_auto.py 能写入进度
+            env = os.environ.copy()
+            env['NARRAVID_PROGRESS_FILE'] = str(progress_file)
+            proc = subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, cwd=str(ROOT), env=env)
+            JOBS[rid] = {'proc': proc, 'progress': 'TTS 生成中...', 'video': '', 'srt': '', 'progress_file': str(progress_file)}
             def mon():
                 j = JOBS.get(rid)
                 if not j: return
                 try:
                     proc.wait(timeout=600)
-                    mp4s = sorted(out.glob('*.mp4'))
-                    if mp4s: j['video'] = '/' + str(mp4s[0].relative_to(ROOT)).replace('\\', '/')
-                    j['progress'] = '完成'
+                    if proc.returncode == 0:
+                        mp4s = sorted(out.glob('*.mp4'))
+                        if mp4s: j['video'] = '/' + str(mp4s[0].relative_to(ROOT)).replace('\\', '/')
+                        j['progress'] = '完成'
+                    else:
+                        # 渲染失败，不设置 video 和完成标记
+                        err = proc.stderr.read().decode('utf-8','ignore')[-200:] if proc.stderr else ''
+                        j['progress'] = f'失败 (code {proc.returncode})'
+                        j['error'] = err
                 except subprocess.TimeoutExpired:
                     proc.kill(); j['progress'] = '超时'
             threading.Thread(target=mon, daemon=True).start()

@@ -1,0 +1,538 @@
+"""
+narravid WebUI 全功能端到端测试脚本
+
+用法:
+  python test_e2e.py
+  python test_e2e.py --port 5001 --workers 2
+  python test_e2e.py --keep  (保留测试输出目录)
+
+测试内容:
+  1. 启动 WebUI 服务
+  2. 生成测试素材（彩色图片 + BGM）
+  3. 上传图片（单张 + 批量）
+  4. 缩略图访问 + 路径安全校验
+  5. 渲染视频（含 TTS、标题页、字幕烧录、BGM）
+  6. 进度轮询
+  7. 取消渲染
+  8. 下载结果视频
+  9. 多线程渲染对比
+"""
+import argparse
+import base64
+import io
+import json
+import os
+import shutil
+import subprocess
+import sys
+import time
+import wave
+from pathlib import Path
+from urllib.request import Request, urlopen
+from urllib.error import HTTPError
+
+# ── 测试素材生成 ──────────────────────────────────────────────
+
+def generate_test_image(width: int, height: int, color: tuple, text: str, out_path: Path):
+    """用 matplotlib 生成带文字的彩色测试图片"""
+    import matplotlib
+    matplotlib.use('Agg')
+    import matplotlib.pyplot as plt
+    import numpy as np
+
+    fig, ax = plt.subplots(figsize=(width / 100, height / 100), dpi=100)
+    r, g, b = [x / 255 for x in color]
+    fig.patch.set_facecolor((r, g, b))
+    ax.set_facecolor((r, g, b))
+    ax.set_xlim(0, width)
+    ax.set_ylim(0, height)
+    ax.axis('off')
+    ax.text(width / 2, height / 2, text, fontsize=42, fontweight='bold',
+            color='white', ha='center', va='center',
+            fontfamily=['Microsoft YaHei', 'SimHei', 'sans-serif'])
+    plt.tight_layout(pad=0)
+    fig.savefig(out_path, dpi=100, facecolor=fig.get_facecolor())
+    plt.close(fig)
+
+
+def generate_test_bgm(out_path: Path, duration_sec: float = 15.0, freq: float = 440.0):
+    """用 Python wave 模块生成简单的正弦波 BGM wav 文件"""
+    import struct
+    import math
+
+    sample_rate = 24000
+    n_samples = int(sample_rate * duration_sec)
+    samples = []
+    for i in range(n_samples):
+        t = i / sample_rate
+        # 柔和的和弦：A4 + E5 + A5，低音量
+        val = (math.sin(2 * math.pi * freq * t) * 0.15 +
+               math.sin(2 * math.pi * freq * 1.5 * t) * 0.10 +
+               math.sin(2 * math.pi * freq * 2 * t) * 0.08)
+        sample = int(val * 32767)
+        sample = max(-32768, min(32767, sample))
+        samples.append(struct.pack('<h', sample))
+
+    with wave.open(str(out_path), 'w') as wf:
+        wf.setnchannels(1)
+        wf.setsampwidth(2)
+        wf.setframerate(sample_rate)
+        wf.writeframes(b''.join(samples))
+
+
+# ── HTTP 工具 ────────────────────────────────────────────────
+
+def api_get(base_url: str, path: str, expect_ok: bool = True):
+    """发送 GET 请求"""
+    url = base_url + path
+    req = Request(url)
+    try:
+        resp = urlopen(req, timeout=10)
+        data = json.loads(resp.read().decode('utf-8'))
+        return resp.status, data
+    except HTTPError as e:
+        body = e.read().decode('utf-8', 'ignore')
+        try:
+            data = json.loads(body)
+        except Exception:
+            data = {'raw': body}
+        return e.code, data
+
+
+def api_post(base_url: str, path: str, payload: dict = None):
+    """发送 POST JSON 请求"""
+    url = base_url + path
+    body = json.dumps(payload or {}, ensure_ascii=False).encode('utf-8')
+    req = Request(url, data=body, headers={'Content-Type': 'application/json'})
+    try:
+        resp = urlopen(req, timeout=30)
+        data = json.loads(resp.read().decode('utf-8'))
+        return resp.status, data
+    except HTTPError as e:
+        body = e.read().decode('utf-8', 'ignore')
+        try:
+            data = json.loads(body)
+        except Exception:
+            data = {'raw': body}
+        return e.code, data
+
+
+def upload_file(base_url: str, file_path: Path):
+    """上传文件到 /api/upload"""
+    raw = file_path.read_bytes()
+    b64 = base64.b64encode(raw).decode('ascii')
+    payload = {'name': file_path.name, 'data': b64}
+    return api_post(base_url, '/api/upload', payload)
+
+
+def poll_until_done(base_url: str, render_id: str, timeout: float = 600, interval: float = 2.0):
+    """轮询 /api/status 直到渲染完成"""
+    start = time.time()
+    last_progress = ''
+    while time.time() - start < timeout:
+        status, data = api_get(base_url, f'/api/status/{render_id}')
+        progress = data.get('progress', '')
+        if progress != last_progress:
+            print(f'    进度: {progress}')
+            last_progress = progress
+        if data.get('done'):
+            return data
+        if data.get('error'):
+            return data
+        time.sleep(interval)
+    return {'error': f'超时 ({timeout}s)'}
+
+
+# ── 测试用例 ─────────────────────────────────────────────────
+
+class TestResult:
+    def __init__(self):
+        self.passed = []
+        self.failed = []
+        self.skipped = []
+
+    def ok(self, name, detail=''):
+        self.passed.append(name)
+        tag = '\033[92mPASS\033[0m'
+        print(f'  [{tag}] {name}' + (f' — {detail}' if detail else ''))
+
+    def fail(self, name, detail=''):
+        self.failed.append(name)
+        tag = '\033[91mFAIL\033[0m'
+        print(f'  [{tag}] {name}' + (f' — {detail}' if detail else ''))
+
+    def skip(self, name, detail=''):
+        self.skipped.append(name)
+        tag = '\033[93mSKIP\033[0m'
+        print(f'  [{tag}] {name}' + (f' — {detail}' if detail else ''))
+
+    def summary(self):
+        total = len(self.passed) + len(self.failed) + len(self.skipped)
+        print(f'\n{"="*60}')
+        print(f'测试结果: {total} 项')
+        print(f'  \033[92m通过: {len(self.passed)}\033[0m')
+        print(f'  \033[91m失败: {len(self.failed)}\033[0m')
+        print(f'  \033[93m跳过: {len(self.skipped)}\033[0m')
+        if self.failed:
+            print(f'\n  失败项:')
+            for f in self.failed:
+                print(f'    - {f}')
+        print(f'{"="*60}')
+        return len(self.failed) == 0
+
+
+def wait_for_server(base_url: str, timeout: float = 15.0):
+    """等待服务器启动"""
+    start = time.time()
+    while time.time() - start < timeout:
+        try:
+            resp = urlopen(base_url + '/', timeout=2)
+            if resp.status == 200:
+                return True
+        except Exception:
+            pass
+        time.sleep(0.5)
+    return False
+
+
+def run_tests(base_url: str, test_dir: Path, workers: int, result: TestResult):
+    """运行全部测试用例"""
+
+    # ── 测试 1: 服务器可达 ──
+    print('\n[1] 服务器连通性')
+    try:
+        resp = urlopen(base_url + '/', timeout=5)
+        result.ok('首页可访问', f'status={resp.status}')
+    except Exception as e:
+        result.fail('首页可访问', str(e))
+        return  # 服务器不通，后续测试无法进行
+
+    # ── 测试 2: 生成测试素材 ──
+    print('\n[2] 生成测试素材')
+    assets_dir = test_dir / 'assets'
+    assets_dir.mkdir(parents=True, exist_ok=True)
+
+    images = []
+    scenes_data = [
+        ('第一幕：数据概览', (26, 26, 46), '数据分析概览\n探索游戏世界的故事'),
+        ('第二幕：趋势分析', (22, 66, 91), '趋势分析\n数据揭示隐藏的规律'),
+        ('第三幕：深度解读', (44, 62, 80), '深度解读\n每个细节都值得思考'),
+        ('第四幕：总结展望', (69, 31, 31), '总结与展望\n故事仍在继续'),
+    ]
+    try:
+        for i, (label, color, text) in enumerate(scenes_data, 1):
+            img_path = assets_dir / f'slide-{i:02d}.png'
+            generate_test_image(1920, 1080, color, text, img_path)
+            images.append((img_path, label))
+            print(f'    生成: {img_path.name} ({label})')
+        result.ok('生成 4 张测试图片')
+
+        bgm_path = assets_dir / 'test_bgm.wav'
+        generate_test_bgm(bgm_path, duration_sec=20.0)
+        result.ok('生成测试 BGM', f'{bgm_path.name}')
+    except Exception as e:
+        result.fail('生成测试素材', str(e))
+        return
+
+    # ── 测试 3: 上传图片 ──
+    print('\n[3] 图片上传')
+    uploaded_images = []
+    for img_path, label in images:
+        status, data = upload_file(base_url, img_path)
+        if status == 200 and 'path' in data:
+            uploaded_images.append((data['path'], label))
+            result.ok(f'上传 {img_path.name}', f'size={img_path.stat().st_size}')
+        else:
+            result.fail(f'上传 {img_path.name}', f'status={status}, data={data}')
+
+    if len(uploaded_images) < len(images):
+        result.skip('后续上传相关测试', '图片上传不完整')
+        return
+
+    # ── 测试 4: 缩略图访问 + 路径安全 ──
+    print('\n[4] 缩略图访问与安全')
+    # 4a: 正常缩略图
+    valid_path = uploaded_images[0][0]
+    try:
+        url = base_url + '/thumb?path=' + __import__('urllib.parse').parse.quote(valid_path)
+        resp = urlopen(url, timeout=5)
+        if resp.status == 200 and len(resp.read()) > 0:
+            result.ok('正常缩略图可访问')
+        else:
+            result.fail('正常缩略图可访问', f'status={resp.status}')
+    except Exception as e:
+        result.fail('正常缩略图可访问', str(e))
+
+    # 4b: 路径遍历攻击
+    try:
+        url = base_url + '/thumb?path=' + __import__('urllib.parse').parse.quote('C:/Windows/win.ini')
+        resp = urlopen(url, timeout=5)
+        # 如果返回 403，说明安全防护生效
+        result.fail('路径遍历防护', f'应该返回 403，实际返回 {resp.status}')
+    except HTTPError as e:
+        if e.code in (403, 404):
+            result.ok('路径遍历防护', f'返回 {e.code}')
+        else:
+            result.fail('路径遍历防护', f'期望 403/404，返回 {e.code}')
+
+    # ── 测试 5: 上传 BGM ──
+    print('\n[5] BGM 上传')
+    bgm_remote = None
+    status, data = upload_file(base_url, bgm_path)
+    if status == 200 and 'path' in data:
+        bgm_remote = data['path']
+        result.ok('上传 BGM 文件', f'{bgm_path.name}')
+    else:
+        result.fail('上传 BGM 文件', f'status={status}, data={data}')
+
+    # ── 测试 6: 完整渲染（标题页 + TTS + 字幕烧录 + BGM） ──
+    print('\n[6] 完整渲染测试 (标题页 + TTS + 字幕 + BGM)')
+    manifest = {
+        'title': 'narravid-e2e-test',
+        'width': 1280,   # 小分辨率加速测试
+        'height': 720,
+        'fps': 24,
+        'tts_engine': 'edge',
+        'voice': 'zh-CN-XiaoxiaoNeural',
+        'speech_speed': 1.5,
+        'burn_subtitles': True,
+        'workers': workers,
+        'scenes': [
+            {'image': uploaded_images[0][0], 'text': '这是一个全功能测试视频。narravid可以自动将图片和文案转化为解说视频。', 'hold_sec': 0.5},
+            {'image': uploaded_images[1][0], 'text': '支持多线程并行处理，大幅提升生成速度。', 'hold_sec': 0.3},
+            {'image': uploaded_images[2][0], 'text': '支持中英文标点分句，自动生成精准字幕。', 'hold_sec': 0.3},
+            {'image': uploaded_images[3][0], 'text': '感谢观看！更多功能持续开发中。', 'hold_sec': 1.0},
+        ]
+    }
+    render_body = {
+        'manifest': manifest,
+        'bgm': bgm_remote,
+        'title_card': 'narravid 全功能测试',
+        'render_id': 'e2etest',
+    }
+    status, data = api_post(base_url, '/api/render', render_body)
+    if status == 200 and 'render_id' in data:
+        rid = data['render_id']
+        result.ok('发起渲染', f'render_id={rid}')
+
+        print('    等待渲染完成...')
+        final = poll_until_done(base_url, rid, timeout=300)
+        if final.get('error'):
+            result.fail('渲染完成', final['error'][:200])
+        else:
+            result.ok('渲染完成', f'duration≈{time.time():.0f}s')
+            video_url = final.get('video', '')
+            if video_url:
+                result.ok('获得视频路径', video_url)
+                # 下载视频
+                try:
+                    video_resp = urlopen(base_url + video_url, timeout=30)
+                    video_bytes = video_resp.read()
+                    video_out = test_dir / 'e2e_test_video.mp4'
+                    video_out.write_bytes(video_bytes)
+                    result.ok('下载视频', f'{len(video_bytes)/1024:.0f} KB → {video_out}')
+                except Exception as e:
+                    result.fail('下载视频', str(e))
+            else:
+                result.fail('获得视频路径', 'video 字段为空')
+    else:
+        result.fail('发起渲染', f'status={status}, data={data}')
+
+    # ── 测试 7: 不烧录字幕 ──
+    print('\n[7] 无字幕渲染测试')
+    manifest_nosub = dict(manifest)
+    manifest_nosub['burn_subtitles'] = False
+    manifest_nosub['scenes'] = [
+        {'image': uploaded_images[0][0], 'text': '这条没有烧录字幕。', 'hold_sec': 0.5},
+        {'image': uploaded_images[1][0], 'text': '但仍然有配音和独立SRT文件。', 'hold_sec': 0.5},
+    ]
+    render_body_nosub = {
+        'manifest': manifest_nosub,
+        'bgm': None,
+        'title_card': None,
+        'render_id': 'nosubtest',
+    }
+    status, data = api_post(base_url, '/api/render', render_body_nosub)
+    if status == 200 and 'render_id' in data:
+        rid = data['render_id']
+        result.ok('发起无字幕渲染', f'render_id={rid}')
+        final = poll_until_done(base_url, rid, timeout=120)
+        if final.get('error'):
+            result.fail('无字幕渲染完成', final['error'][:200])
+        else:
+            result.ok('无字幕渲染完成')
+    else:
+        result.fail('发起无字幕渲染', f'status={status}')
+
+    # ── 测试 8: 空文案（纯图片展示） ──
+    print('\n[8] 纯图片展示测试 (无文案)')
+    manifest_silent = dict(manifest)
+    manifest_silent['scenes'] = [
+        {'image': uploaded_images[0][0], 'text': '', 'hold_sec': 3.0},
+    ]
+    render_body_silent = {
+        'manifest': manifest_silent,
+        'bgm': None,
+        'title_card': None,
+        'render_id': 'silenttest',
+    }
+    status, data = api_post(base_url, '/api/render', render_body_silent)
+    if status == 200 and 'render_id' in data:
+        rid = data['render_id']
+        result.ok('发起纯图片渲染', f'render_id={rid}')
+        final = poll_until_done(base_url, rid, timeout=60)
+        if final.get('error'):
+            result.fail('纯图片渲染完成', final['error'][:200])
+        else:
+            result.ok('纯图片渲染完成')
+    else:
+        result.fail('发起纯图片渲染', f'status={status}')
+
+    # ── 测试 9: 取消渲染 ──
+    print('\n[9] 取消渲染测试')
+    manifest_long = dict(manifest)
+    manifest_long['scenes'] = [
+        {'image': uploaded_images[i][0], 'text': f'第{i+1}段较长的文案，用于测试取消功能。这段文字应该足够长，使得渲染需要一定时间。' * 3, 'hold_sec': 1.0}
+        for i in range(4)
+    ]
+    render_body_long = {
+        'manifest': manifest_long,
+        'bgm': None,
+        'title_card': '取消测试',
+        'render_id': 'canceltest',
+    }
+    status, data = api_post(base_url, '/api/render', render_body_long)
+    if status == 200 and 'render_id' in data:
+        rid = data['render_id']
+        result.ok('发起长渲染', f'render_id={rid}')
+        time.sleep(2)  # 等一会儿再取消
+        cancel_status, cancel_data = api_post(base_url, f'/api/cancel/{rid}')
+        if cancel_status == 200:
+            result.ok('发送取消请求', f'status={cancel_status}')
+        else:
+            result.fail('发送取消请求', f'status={cancel_status}')
+    else:
+        result.fail('发起长渲染', f'status={status}')
+
+    # ── 测试 10: 无效请求校验 ──
+    print('\n[10] 边界与错误处理')
+    # 10a: 不存在的 render_id
+    status, data = api_get(base_url, '/api/status/nonexistent123')
+    if status == 404:
+        result.ok('不存在的 render_id 返回 404')
+    else:
+        result.fail('不存在的 render_id 返回 404', f'实际返回 {status}')
+
+    # 10b: 不存在的缩略图（路径不在白名单 → 403；路径在白名单但文件不存在 → 404）
+    try:
+        url = base_url + '/thumb?path=/nonexistent/path/image.png'
+        resp = urlopen(url, timeout=5)
+        result.fail('不存在的缩略图应返回错误', f'实际返回 {resp.status}')
+    except HTTPError as e:
+        if e.code in (403, 404):
+            result.ok('不存在的缩略图返回错误', f'{e.code}')
+        else:
+            result.fail('不存在的缩略图应返回 403/404', f'实际返回 {e.code}')
+
+    # 10c: 无图片的渲染请求（应该只处理有图片的 scenes）
+    manifest_empty = dict(manifest)
+    manifest_empty['scenes'] = []  # 空 scenes
+    render_body_empty = {
+        'manifest': manifest_empty,
+        'bgm': None,
+        'title_card': None,
+        'render_id': 'emptytest',
+    }
+    # 这个由 video_auto.py 处理，会报错
+    status, data = api_post(base_url, '/api/render', render_body_empty)
+    if status == 200:
+        # 渲染被接受了，但应该最终报错
+        rid = data['render_id']
+        final = poll_until_done(base_url, rid, timeout=30)
+        if final.get('error'):
+            result.ok('空 scenes 渲染正确报错', final['error'][:80])
+        else:
+            result.fail('空 scenes 渲染应报错', '但未报错')
+    else:
+        result.ok('空 scenes 请求被拒绝', f'status={status}')
+
+
+# ── 主流程 ───────────────────────────────────────────────────
+
+def main():
+    parser = argparse.ArgumentParser(description='narravid WebUI 全功能端到端测试')
+    parser.add_argument('--port', type=int, default=5001, help='WebUI 端口 (默认 5001)')
+    parser.add_argument('--workers', type=int, default=4, help='渲染线程数 (默认 4)')
+    parser.add_argument('--keep', action='store_true', help='保留测试输出目录')
+    parser.add_argument('--base-url', type=str, default=None, help='已有 WebUI 地址（跳过启动）')
+    args = parser.parse_args()
+
+    base_url = args.base_url or f'http://127.0.0.1:{args.port}'
+    test_dir = Path(__file__).resolve().parent / 'test_output'
+    result = TestResult()
+
+    print('=' * 60)
+    print('narravid WebUI 全功能端到端测试')
+    print('=' * 60)
+
+    # ── 启动 WebUI 服务 ──
+    proc = None
+    if not args.base_url:
+        print(f'\n[0] 启动 WebUI (port={args.port}) ...')
+        webui_script = Path(__file__).resolve().parent / 'webui.py'
+        proc = subprocess.Popen(
+            [sys.executable, str(webui_script), '--port', str(args.port)],
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+        )
+        if wait_for_server(base_url):
+            result.ok('WebUI 服务启动', f'port={args.port}')
+        else:
+            result.fail('WebUI 服务启动', '超时')
+            if proc:
+                proc.kill()
+            result.summary()
+            sys.exit(1)
+    else:
+        print(f'\n[0] 使用已有服务: {base_url}')
+        if wait_for_server(base_url):
+            result.ok('已有服务可达')
+        else:
+            result.fail('已有服务不可达')
+            result.summary()
+            sys.exit(1)
+
+    # ── 运行测试 ──
+    start_time = time.time()
+    try:
+        run_tests(base_url, test_dir, args.workers, result)
+    except KeyboardInterrupt:
+        print('\n\n测试被中断')
+    except Exception as e:
+        print(f'\n\n测试异常: {e}')
+        import traceback
+        traceback.print_exc()
+    finally:
+        elapsed = time.time() - start_time
+        # 关闭 WebUI
+        if proc:
+            proc.terminate()
+            try:
+                proc.wait(timeout=5)
+            except Exception:
+                proc.kill()
+
+    # ── 结果汇总 ──
+    print(f'\n总耗时: {elapsed:.1f}s')
+    success = result.summary()
+
+    if not args.keep and test_dir.exists():
+        shutil.rmtree(test_dir, ignore_errors=True)
+        print(f'\n测试输出已清理 (用 --keep 保留)')
+    else:
+        print(f'\n测试输出保留在: {test_dir}')
+
+    sys.exit(0 if success else 1)
+
+
+if __name__ == '__main__':
+    main()

@@ -451,8 +451,10 @@ class H(SimpleHTTPRequestHandler):
                 if j['proc'].returncode == 0:
                     resp['video'] = j.get('video','')
                 else:
-                    err = j['proc'].stderr.read().decode('utf-8','ignore')[-300:] if j['proc'].stderr else ''
-                    resp['error'] = f'渲染失败 (code {j["proc"].returncode}): {err[-150:]}'
+                    err = j.get('stderr', '') or ''
+                    code = j['proc'].returncode
+                    err_tail = err[-300:]
+                    resp['error'] = f'渲染失败 (code {code}): {err_tail}'
             self._json(resp)
         elif p.path.startswith('/rendered/'):
             fp = ROOT / p.path.lstrip('/')
@@ -501,11 +503,13 @@ class H(SimpleHTTPRequestHandler):
                     cmd += ['--bgm', str(bgm_path.resolve())]
             if tc: cmd += ['--title-card', tc]
             if not m.get('burn_subtitles', True): cmd += ['--no-burn']
-            if m.get('tts_engine'): cmd += ['--engine', m['tts_engine']]
-            if m.get('voice'): cmd += ['--voice', m['voice']]
-            if m.get('speech_speed'): cmd += ['--speed', str(m['speech_speed'])]
+            engine = m.get('tts_engine')
+            if engine and engine in ('edge', 'system'): cmd += ['--engine', engine]
+            if m.get('voice'): cmd += ['--voice', str(m['voice'])]
+            spd = m.get('speech_speed')
+            if spd and isinstance(spd, (int, float)) and 0.5 <= spd <= 3.0: cmd += ['--speed', str(spd)]
             wk = m.get('workers', 4)
-            if wk and wk != 1: cmd += ['--workers', str(wk)]
+            if wk and isinstance(wk, int) and 1 < wk <= 32: cmd += ['--workers', str(wk)]
             # stdout → DEVNULL 避免管道死锁；stderr → PIPE 用于错误收集
             # 实时解析 stdout 进度通过临时进度文件实现
             progress_file = out / '_progress.txt'
@@ -514,7 +518,7 @@ class H(SimpleHTTPRequestHandler):
             env = os.environ.copy()
             env['NARRAVID_PROGRESS_FILE'] = str(progress_file)
             proc = subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, cwd=str(ROOT), env=env)
-            JOBS[rid] = {'proc': proc, 'progress': 'TTS 生成中...', 'video': '', 'srt': '', 'progress_file': str(progress_file)}
+            JOBS[rid] = {'proc': proc, 'progress': 'TTS 生成中...', 'video': '', 'srt': '', 'stderr': '', 'progress_file': str(progress_file)}
             def mon():
                 j = JOBS.get(rid)
                 if not j: return
@@ -526,7 +530,8 @@ class H(SimpleHTTPRequestHandler):
                         j['progress'] = '完成'
                     else:
                         # 渲染失败，不设置 video 和完成标记
-                        err = proc.stderr.read().decode('utf-8','ignore')[-200:] if proc.stderr else ''
+                        err = proc.stderr.read().decode('utf-8','ignore')[-500:] if proc.stderr else ''
+                        j['stderr'] = err
                         j['progress'] = f'失败 (code {proc.returncode})'
                         j['error'] = err
                 except subprocess.TimeoutExpired:

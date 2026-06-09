@@ -92,7 +92,7 @@ body{font-family:"Microsoft YaHei","PingFang SC","Noto Sans SC",sans-serif;backg
 .scene .foot{display:flex;gap:8px;align-items:center;font-size:12px;flex-wrap:wrap}
 .scene .foot .path{flex:1;color:var(--muted);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:260px;font-size:11px}
 .scene .foot .path.err{color:#e74c3c}
-.scene .hold-input{width:64px;padding:5px 8px;border:1px solid var(--border2);border-radius:6px;background:var(--surface2);color:var(--ink);font-size:12px;text-align:center}
+.scene .hold-input{width:100px;padding:5px 8px;border:1px solid var(--border2);border-radius:6px;background:var(--surface2);color:var(--ink);font-size:12px;text-align:center}
 .scene .foot .btn-sm{padding:4px 10px;font-size:11px;border:1px solid var(--border2);border-radius:6px;background:var(--surface2);color:var(--ink);cursor:pointer;transition:.15s}
 .scene .foot .btn-sm:hover{background:var(--accent);color:#fff;border-color:var(--accent)}
 .scene .del{background:none;border:none;color:#666;cursor:pointer;font-size:20px;padding:0 2px;transition:.15s}
@@ -175,8 +175,19 @@ body{font-family:"Microsoft YaHei","PingFang SC","Noto Sans SC",sans-serif;backg
       <input type="text" id="tc" placeholder="留空则不生成标题页">
     </div>
     <div class="field">
+      <label>封尾页文字</label>
+      <input type="text" id="ec" placeholder="留空则不生成封尾页（如：感谢观看）">
+    </div>
+    <div class="field">
       <label>背景音乐 (BGM)</label>
       <input type="file" id="bgm" accept="audio/*" style="font-size:12px;color:var(--muted)">
+    </div>
+    <div class="field">
+      <label>BGM 音量</label>
+      <div class="range-row">
+        <input type="range" id="bvol" min="0" max="1" step="0.05" value="0.25">
+        <span class="val" id="bv">25%</span>
+      </div>
     </div>
     <div class="field">
       <label>并行线程数</label>
@@ -223,6 +234,7 @@ function toast(msg,type){
 
 function init(){
   E('sp').oninput=()=>E('sv').textContent=parseFloat(E('sp').value).toFixed(2)+'x';
+  E('bvol').oninput=()=>E('bv').textContent=Math.round(parseFloat(E('bvol').value)*100)+'%';
   add();add();add();
 }
 
@@ -371,8 +383,9 @@ async function render(){
   }
   let m={title:'narravid',width:1920,height:1080,tts_engine:'edge',workers:parseInt(E('wk').value),
     voice:E('v').value,speech_speed:parseFloat(E('sp').value),burn_subtitles:E('bs').checked,
+    bgm_volume:parseFloat(E('bvol').value),
     scenes:valid.map(s=>({image:s.image,text:s.text.trim(),hold_sec:s.hold||0}))};
-  let body={manifest:m,bgm:bgm,title_card:E('tc').value.trim()||null};
+  let body={manifest:m,bgm:bgm,title_card:E('tc').value.trim()||null,end_card:E('ec').value.trim()||null};
   rid='r'+Math.random().toString(36).slice(2,8);
   E('st').style.display='block';E('sm').textContent='正在生成视频...';E('rb').disabled=true;
   E('pf').style.width='2%';
@@ -398,7 +411,10 @@ function done(err,video){
   E('pf').style.width='0';
   let b=E('rs');
   if(err){b.textContent='❌ '+err;b.style.background='linear-gradient(135deg,#c0392b,#e74c3c)';b.style.display='block'}
-  else{b.innerHTML='✅ 视频已生成！<a href="'+video+'" download>点击下载</a>';b.style.background='linear-gradient(135deg,#1e8449,#27ae60)';b.style.display='block'}
+  else{
+    b.innerHTML='✅ 视频已生成！';b.style.background='linear-gradient(135deg,#1e8449,#27ae60)';b.style.display='block';
+    if(video){let a=document.createElement('a');a.href=video;a.download='';a.click()}
+  }
 }
 function cancel(){if(rid)fetch('/api/cancel/'+rid,{method:'POST'});clearTimeout(tmr);E('st').style.display='none';E('rb').disabled=false;rid=null;E('pf').style.width='0'}
 document.addEventListener('dragover',e=>e.preventDefault());
@@ -501,7 +517,13 @@ class H(SimpleHTTPRequestHandler):
                     bgm_path = UPLOAD_DIR / bgm_path
                 if bgm_path.exists():
                     cmd += ['--bgm', str(bgm_path.resolve())]
+                    # BGM 音量
+                    bvol = m.get('bgm_volume')
+                    if bvol is not None and isinstance(bvol, (int, float)) and 0.0 <= bvol <= 1.0:
+                        cmd += ['--bgm-volume', str(bvol)]
             if tc: cmd += ['--title-card', tc]
+            ec = data.get('end_card')
+            if ec: cmd += ['--end-card', ec]
             if not m.get('burn_subtitles', True): cmd += ['--no-burn']
             engine = m.get('tts_engine')
             if engine and engine in ('edge', 'system'): cmd += ['--engine', engine]

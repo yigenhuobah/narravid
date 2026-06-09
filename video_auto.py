@@ -409,6 +409,9 @@ def main():
     parser.add_argument('--output-dir', help='输出目录 (覆盖 manifest 中的 output_dir)')
     parser.add_argument('--bgm', help='背景音乐文件路径 (mp3/wav)')
     parser.add_argument('--title-card', help='自动生成标题页 (输入标题文字)')
+    parser.add_argument('--end-card', help='自动生成封尾页 (输入文字，如"感谢观看")')
+    parser.add_argument('--bgm-volume', type=float, default=0.25,
+                        help='BGM 音量 (0.0~1.0, 配音时 BGM 降到该比例, 默认 0.25)')
     parser.add_argument('--no-burn', action='store_true', help='不烧录字幕到视频')
     parser.add_argument('--engine', choices=['edge', 'system'], help='TTS 引擎: edge 或 system')
     parser.add_argument('--workers', type=int, default=0,
@@ -432,7 +435,9 @@ def main():
     pad_sec = float(manifest.get('scene_tail_silence_sec', 0.16))
     burn_subtitles = not args.no_burn and bool(manifest.get('burn_subtitles', True))
     bgm_path = args.bgm
+    bgm_volume = max(0.0, min(1.0, args.bgm_volume))
     title_card_text = args.title_card
+    end_card_text = args.end_card
     workers = args.workers or int(manifest.get('workers', DEFAULT_WORKERS))
     # 至少 1 个 worker
     workers = max(1, workers)
@@ -469,7 +474,7 @@ def main():
         generate_title_card(title_card_text, title_card_path, width, height)
 
     scene_infos = []
-    total_scenes = len(manifest['scenes']) + (1 if title_card_path else 0)
+    total_scenes = len(manifest['scenes']) + (1 if title_card_path else 0) + (1 if end_card_text else 0)
 
     # ── 标题页场景（串行） ──
     if title_card_path:
@@ -546,6 +551,31 @@ def main():
             scene_infos.append(info)
 
     # ── concat（必须等所有场景完成） ──
+    # 先追加封尾页（在 concat 之前生成）
+    end_card_path = None
+    if end_card_text:
+        end_card_path = tmp_dir / 'end_card.png'
+        update_progress('生成封尾页...')
+        generate_title_card(end_card_text, end_card_path, width, height)
+        print(f'[end] End card: {end_card_text}')
+        ec_idx = len(scene_infos)
+        ec_wav = audio_dir / f'{ec_idx:03d}_end.wav'
+        ec_srt = tmp_dir / f'{ec_idx:03d}_end.srt'
+        ec_mp4 = scene_dir / f'{ec_idx:03d}_end.mp4'
+        make_silent_audio(ec_wav, 3.0)
+        make_scene_srt([], ec_srt)
+        run(['ffmpeg', '-y', '-loop', '1', '-i', str(end_card_path), '-i', str(ec_wav),
+             '-vf', f'scale={width}:{height}:force_original_aspect_ratio=decrease,pad={width}:{height}:(ow-iw)/2:(oh-ih)/2:color=black',
+             '-r', str(fps), '-t', '3.0', '-shortest',
+             '-c:v', 'libx264', '-pix_fmt', 'yuv420p', '-c:a', 'aac', '-b:a', '192k',
+             str(ec_mp4)], silent=True)
+        scene_infos.append({
+            'idx': ec_idx, 'image': str(end_card_path),
+            'text': '', 'narration_duration': 0, 'hold_sec': 0,
+            'scene_duration': 3.0, 'mp4': str(ec_mp4), 'audio': str(ec_wav),
+        })
+        print(f'  End card OK')
+
     print(f'\nConcat {len(scene_infos)} scenes ... ', end='', flush=True)
     update_progress('合并场景...')
     concat_txt = tmp_dir / 'concat.txt'
@@ -568,7 +598,7 @@ def main():
         run(['ffmpeg', '-y', '-i', str(final_mp4), '-vn', '-ar', '24000', '-ac', '1',
              str(voice_total)], silent=True)
         mixed_audio = tmp_dir / 'mixed_audio.wav'
-        mix_bgm(voice_total, Path(bgm_path).resolve(), mixed_audio)
+        mix_bgm(voice_total, Path(bgm_path).resolve(), mixed_audio, duck_ratio=bgm_volume)
         tmp_video = tmp_dir / 'video_no_audio.mp4'
         run(['ffmpeg', '-y', '-i', str(final_mp4), '-i', str(mixed_audio),
              '-c:v', 'copy', '-c:a', 'aac', '-b:a', '192k', '-map', '0:v:0', '-map', '1:a:0',

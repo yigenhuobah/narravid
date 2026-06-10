@@ -5,6 +5,45 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [v1.5.0] - 2026-06-11
+
+### Added
+
+- **WebUI v6 完整重写**：模板、BGM 管理、在线预览、清理旧文件
+  - 模板系统：保存/加载/删除场景配置模板
+  - BGM 管理：下拉选择已上传 BGM + 独立上传按钮
+  - 视频预览：渲染完成后弹窗内播放预览 + 下载按钮
+  - 清理旧文件：一键保留最近 5 次渲染
+  - 分辨率选择：1080p横屏/720p横屏/1080p竖屏/方形
+  - 标题页/封尾页独立时长输入
+  - 拖拽排序视觉反馈（虚线高亮）
+  - textarea 实时保存（oninput 代替 onchange）
+  - 停顿输入框加宽
+  - 自动检测 edge-tts 可用性（/api/tts-check）
+  - 文件大小限制（图片 20MB / BGM 50MB / 总 60MB）
+  - 渲染完成自动下载
+
+- **video_auto.py 大量增强**
+  - `--end-card-duration`：封尾页时长独立于标题页
+  - `--card-duration`：标题页停留秒数可配（默认 3.0）
+  - `--subtitle-style`：自定义字幕 ASS 样式
+  - `--title-card-bg`：标题页/封尾页背景色可配
+  - `--no-smart-comma`：禁用逗号智能断句
+  - 智能逗号断句：长句按逗号切分但合并短句（< 15 字）
+  - 单场景失败不崩全局：`failed` 列表追踪，仅全部失败才 raise
+  - BGM 混音降级：`mix_bgm` 失败时复制原音频而非崩溃
+  - 标题页/封尾页生成失败时跳过（matplotlib 不可用场景）
+  - 渲染后自动清理 `_tmp` 临时目录
+
+### Fixed
+
+- **mon() 递归死循环**：改为 while 循环，stall_count 不再因递归重置
+- **stderr PIPE 死锁**：改用文件写 stderr（避免 matplotlib 字体警告撑爆管道）
+- **stderr 文件句柄泄漏**：Popen stderr=open() 改为变量 + finally 关闭
+- **/api/cancel/ 路径匹配**：改为 startswith 兼容有无尾斜杠
+- **/api/status 竞态**：mon() 还没设 video 时状态端点直接扫目录回填
+- **workers=1 不传递**：条件 `1 < wk` 改为 `1 <= wk`
+
 ## [v1.3.1] - 2026-06-09
 
 ### Changed

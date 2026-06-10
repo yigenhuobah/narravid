@@ -72,8 +72,9 @@ def srt_ts(sec: float) -> str:
     return f'{h:02d}:{m:02d}:{s:02d},{ms:03d}'
 
 
-def split_sentences(text: str):
-    """按中英文标点分句，支持 。！？；!?; 等句末标点"""
+def split_sentences(text: str, smart_comma: bool = True):
+    """按中英文标点分句，支持 。！？；!?; 等句末标点。
+    smart_comma=True 时，对逗号/顿号做智能断句：长句按逗号切分但合并短句。"""
     text = text.replace('\r', '').replace('\n', '').strip()
     if not text:
         return []
@@ -88,6 +89,33 @@ def split_sentences(text: str):
             cur = ''
     if cur.strip():
         chunks.append(cur.strip())
+    # 如果只有一整句（无句末标点结尾），尝试按逗号智能断句
+    if smart_comma and len(chunks) <= 1:
+        raw = chunks[0] if chunks else text
+        # 按逗号/顿号拆分
+        comma_parts = []
+        buf = ''
+        for ch in raw:
+            buf += ch
+            if ch in '，、,':
+                if buf.strip():
+                    comma_parts.append(buf.strip())
+                buf = ''
+        if buf.strip():
+            comma_parts.append(buf.strip())
+        if len(comma_parts) > 1:
+            # 合并短句：相邻短句总长度 < 15 字就合并
+            merged = []
+            i = 0
+            while i < len(comma_parts):
+                group = comma_parts[i]
+                j = i + 1
+                while j < len(comma_parts) and len(group.replace('，','').replace('、','').replace(',','')) + len(comma_parts[j].replace('，','').replace('、','').replace(',','')) < 15:
+                    group += comma_parts[j]
+                    j += 1
+                merged.append(group)
+                i = j
+            return merged
     return chunks or [text]
 
 
@@ -95,8 +123,8 @@ def clean_subtitle_text(text: str) -> str:
     return text.strip().rstrip('。！？；!?;，,')
 
 
-def build_sentence_segments(text: str, narration_duration: float, offset: float = 0.0):
-    sentences = split_sentences(text)
+def build_sentence_segments(text: str, narration_duration: float, offset: float = 0.0, smart_comma: bool = True):
+    sentences = split_sentences(text, smart_comma=smart_comma)
     if not sentences:
         return []
     weights = [max(len(s.replace(' ', '').replace('。', '')), 1) for s in sentences]
@@ -115,13 +143,16 @@ def build_sentence_segments(text: str, narration_duration: float, offset: float 
     return segments
 
 
-def subtitle_filter_arg(srt_path: Path) -> str:
+def subtitle_filter_arg(srt_path: Path, style_override: str = None) -> str:
     path = str(srt_path.resolve()).replace('\\', '/')
     path = path.replace(':', '\\:').replace("'", r"\'")
-    style = (
-        'FontName=Microsoft YaHei,FontSize=16,PrimaryColour=&H00FFFFFF,'
-        'OutlineColour=&H64000000,BorderStyle=3,Outline=1,Shadow=0,MarginV=30,Alignment=2'
-    )
+    if style_override:
+        style = style_override
+    else:
+        style = (
+            'FontName=Microsoft YaHei,FontSize=16,PrimaryColour=&H00FFFFFF,'
+            'OutlineColour=&H64000000,BorderStyle=3,Outline=1,Shadow=0,MarginV=30,Alignment=2'
+        )
     return f"subtitles='{path}':force_style='{style}'"
 
 
@@ -258,7 +289,7 @@ def make_global_srt(scene_infos, out_path: Path):
 
 # ── title card ───────────────────────────────────────────────────
 
-def generate_title_card(title: str, out_path: Path, width: int, height: int):
+def generate_title_card(title: str, out_path: Path, width: int, height: int, bg_color: str = '#1a1a2e'):
     """用 matplotlib 生成标题页"""
     try:
         import matplotlib
@@ -270,8 +301,8 @@ def generate_title_card(title: str, out_path: Path, width: int, height: int):
         return None
 
     fig, ax = plt.subplots(figsize=(width / 100, height / 100), dpi=100)
-    fig.patch.set_facecolor('#1a1a2e')
-    ax.set_facecolor('#1a1a2e')
+    fig.patch.set_facecolor(bg_color)
+    ax.set_facecolor(bg_color)
     ax.set_xlim(0, width)
     ax.set_ylim(0, height)
     ax.axis('off')
@@ -289,15 +320,20 @@ def generate_title_card(title: str, out_path: Path, width: int, height: int):
 # ── BGM mixing ───────────────────────────────────────────────────
 
 def mix_bgm(voice_audio: Path, bgm_path: Path, out_path: Path, duck_ratio: float = 0.25):
-    """将 BGM 与配音混音，配音时 BGM 音量降到 duck_ratio"""
+    """将 BGM 与配音混音，配音时 BGM 音量降到 duck_ratio；失败则降级用原音频"""
     dur = ffprobe_duration(voice_audio)
-    run(['ffmpeg', '-y',
-         '-i', str(voice_audio),
-         '-stream_loop', '-1', '-i', str(bgm_path),
-         '-filter_complex',
-         f'[1:a]volume={duck_ratio:.2f}[a1];[0:a][a1]amix=inputs=2:duration=first:dropout_transition=0.5',
-         '-t', f'{dur:.3f}', '-ar', '24000', '-ac', '1',
-         str(out_path)], silent=True)
+    try:
+        run(['ffmpeg', '-y',
+             '-i', str(voice_audio),
+             '-stream_loop', '-1', '-i', str(bgm_path),
+             '-filter_complex',
+             f'[1:a]volume={duck_ratio:.2f}[a1];[0:a][a1]amix=inputs=2:duration=first:dropout_transition=0.5',
+             '-t', f'{dur:.3f}', '-ar', '24000', '-ac', '1',
+             str(out_path)], silent=True)
+    except Exception as e:
+        print(f'  BGM 混音失败({e})，使用原音频')
+        import shutil
+        shutil.copy2(str(voice_audio), str(out_path))
 
 
 # ── 并行场景处理 ────────────────────────────────────────────────
@@ -336,6 +372,8 @@ def process_single_scene(idx: int, scene: dict, project_root: Path,
                          tts_engine: str, voice: str, rate: int, volume: int,
                          speech_speed: float, pad_sec: float,
                          width: int, height: int, fps: int, burn_subtitles: bool,
+                         subtitle_style: str,
+                         smart_comma: bool,
                          tmp_dir: Path, audio_dir: Path, scene_dir: Path,
                          progress: ProgressTracker):
     """处理单个场景：TTS → 音频处理 → 字幕 → 渲染。供线程池调用。"""
@@ -367,13 +405,13 @@ def process_single_scene(idx: int, scene: dict, project_root: Path,
 
     # ── 字幕 + 渲染 ──
     scene_duration = narration_duration + hold_sec if narration_duration > 0 else (hold_sec or ffprobe_duration(wav))
-    segments = build_sentence_segments(text, narration_duration, 0.0) if text else []
+    segments = build_sentence_segments(text, narration_duration, 0.0, smart_comma=smart_comma) if text else []
     make_scene_srt(segments, srt)
 
     vf = (f"scale={width}:{height}:force_original_aspect_ratio=decrease,"
           f"pad={width}:{height}:(ow-iw)/2:(oh-ih)/2:color=black")
     if burn_subtitles and segments:
-        vf += ',' + subtitle_filter_arg(srt)
+        vf += ',' + subtitle_filter_arg(srt, subtitle_style)
 
     progress.report(idx, 'Render ...')
     run(['ffmpeg', '-y', '-loop', '1', '-i', str(image), '-i', str(wav),
@@ -410,8 +448,15 @@ def main():
     parser.add_argument('--bgm', help='背景音乐文件路径 (mp3/wav)')
     parser.add_argument('--title-card', help='自动生成标题页 (输入标题文字)')
     parser.add_argument('--end-card', help='自动生成封尾页 (输入文字，如"感谢观看")')
+    parser.add_argument('--card-duration', type=float, default=3.0,
+                        help='标题页停留秒数 (默认 3.0)')
+    parser.add_argument('--end-card-duration', type=float, default=0,
+                        help='封尾页停留秒数 (默认与标题页相同)')
     parser.add_argument('--bgm-volume', type=float, default=0.25,
                         help='BGM 音量 (0.0~1.0, 配音时 BGM 降到该比例, 默认 0.25)')
+    parser.add_argument('--subtitle-style', help='字幕 ASS 样式字符串 (覆盖默认)')
+    parser.add_argument('--title-card-bg', help='标题页/封尾页背景色 (如 #1a1a2e, 默认)')
+    parser.add_argument('--no-smart-comma', action='store_true', help='禁用逗号智能断句')
     parser.add_argument('--no-burn', action='store_true', help='不烧录字幕到视频')
     parser.add_argument('--engine', choices=['edge', 'system'], help='TTS 引擎: edge 或 system')
     parser.add_argument('--workers', type=int, default=0,
@@ -438,6 +483,11 @@ def main():
     bgm_volume = max(0.0, min(1.0, args.bgm_volume))
     title_card_text = args.title_card
     end_card_text = args.end_card
+    card_duration = max(1.0, args.card_duration)
+    end_card_duration = max(1.0, args.end_card_duration) if args.end_card_duration > 0 else card_duration
+    subtitle_style = args.subtitle_style
+    card_bg = args.title_card_bg or '#1a1a2e'
+    smart_comma = not args.no_smart_comma
     workers = args.workers or int(manifest.get('workers', DEFAULT_WORKERS))
     # 至少 1 个 worker
     workers = max(1, workers)
@@ -468,10 +518,14 @@ def main():
     # title card（串行，因为只有一个）
     title_card_path = None
     if title_card_text:
-        title_card_path = tmp_dir / 'title_card.png'
         print('[0] Title card: ' + title_card_text)
         update_progress('生成标题页...')
-        generate_title_card(title_card_text, title_card_path, width, height)
+        tcp = tmp_dir / 'title_card.png'
+        result = generate_title_card(title_card_text, tcp, width, height, bg_color=card_bg)
+        if result and result.exists():
+            title_card_path = result
+        else:
+            print('  [warn] 标题页生成失败，跳过')
 
     scene_infos = []
     total_scenes = len(manifest['scenes']) + (1 if title_card_path else 0) + (1 if end_card_text else 0)
@@ -481,17 +535,17 @@ def main():
         wav = audio_dir / '000.wav'
         srt = tmp_dir / '000.srt'
         mp4 = scene_dir / '000.mp4'
-        make_silent_audio(wav, 3.0)
+        make_silent_audio(wav, card_duration)
         make_scene_srt([], srt)
         run(['ffmpeg', '-y', '-loop', '1', '-i', str(title_card_path), '-i', str(wav),
              '-vf', f'scale={width}:{height}:force_original_aspect_ratio=decrease,pad={width}:{height}:(ow-iw)/2:(oh-ih)/2:color=black',
-             '-r', str(fps), '-t', '3.0', '-shortest',
+             '-r', str(fps), '-t', f'{card_duration:.1f}', '-shortest',
              '-c:v', 'libx264', '-pix_fmt', 'yuv420p', '-c:a', 'aac', '-b:a', '192k',
              str(mp4)], silent=True)
         scene_infos.append({
             'idx': 0, 'image': str(title_card_path),
             'text': '', 'narration_duration': 0, 'hold_sec': 0,
-            'scene_duration': 3.0, 'mp4': str(mp4), 'audio': str(wav),
+            'scene_duration': card_duration, 'mp4': str(mp4), 'audio': str(wav),
         })
         print(f'  Title card OK ({total_scenes} scenes total, workers={workers})')
 
@@ -510,6 +564,7 @@ def main():
 
         # 用字典收集结果，保证按 idx 排序
         results = {}
+        failed = []
         with ThreadPoolExecutor(max_workers=workers) as executor:
             future_to_idx = {}
             for sidx, scene in scene_tasks:
@@ -519,6 +574,7 @@ def main():
                     tts_engine, voice, rate, volume,
                     speech_speed, pad_sec,
                     width, height, fps, burn_subtitles,
+                    subtitle_style, smart_comma,
                     tmp_dir, audio_dir, scene_dir,
                     progress,
                 )
@@ -530,8 +586,13 @@ def main():
                     info = future.result()
                     results[sidx] = info
                 except Exception as e:
-                    print(f'[FATAL] scene {sidx} 失败: {e}')
-                    raise
+                    print(f'[ERROR] scene {sidx} 失败: {e}')
+                    failed.append(sidx)
+
+        if failed:
+            print(f'\n警告: {len(failed)} 个场景失败: {failed}')
+            if len(failed) == num_scenes:
+                raise RuntimeError(f'所有场景均失败')
 
         # 按 idx 排序，保证 concat 顺序正确
         for sidx in sorted(results.keys()):
@@ -539,42 +600,56 @@ def main():
 
     else:
         # 串行模式（workers=1 或只有 1 个场景）
+        failed = []
         for sidx, scene in enumerate(manifest['scenes'], 1):
-            info = process_single_scene(
-                sidx, scene, project_root,
-                tts_engine, voice, rate, volume,
-                speech_speed, pad_sec,
-                width, height, fps, burn_subtitles,
-                tmp_dir, audio_dir, scene_dir,
-                progress,
-            )
-            scene_infos.append(info)
+            try:
+                info = process_single_scene(
+                    sidx, scene, project_root,
+                    tts_engine, voice, rate, volume,
+                    speech_speed, pad_sec,
+                    width, height, fps, burn_subtitles,
+                    subtitle_style, smart_comma,
+                    tmp_dir, audio_dir, scene_dir,
+                    progress,
+                )
+                scene_infos.append(info)
+            except Exception as e:
+                print(f'[ERROR] scene {sidx} 失败: {e}')
+                failed.append(sidx)
+        if failed:
+            print(f'\n警告: {len(failed)} 个场景失败: {failed}')
+            if not scene_infos:
+                raise RuntimeError('所有场景均失败')
 
     # ── concat（必须等所有场景完成） ──
     # 先追加封尾页（在 concat 之前生成）
     end_card_path = None
     if end_card_text:
-        end_card_path = tmp_dir / 'end_card.png'
         update_progress('生成封尾页...')
-        generate_title_card(end_card_text, end_card_path, width, height)
-        print(f'[end] End card: {end_card_text}')
-        ec_idx = len(scene_infos)
-        ec_wav = audio_dir / f'{ec_idx:03d}_end.wav'
-        ec_srt = tmp_dir / f'{ec_idx:03d}_end.srt'
-        ec_mp4 = scene_dir / f'{ec_idx:03d}_end.mp4'
-        make_silent_audio(ec_wav, 3.0)
-        make_scene_srt([], ec_srt)
-        run(['ffmpeg', '-y', '-loop', '1', '-i', str(end_card_path), '-i', str(ec_wav),
-             '-vf', f'scale={width}:{height}:force_original_aspect_ratio=decrease,pad={width}:{height}:(ow-iw)/2:(oh-ih)/2:color=black',
-             '-r', str(fps), '-t', '3.0', '-shortest',
-             '-c:v', 'libx264', '-pix_fmt', 'yuv420p', '-c:a', 'aac', '-b:a', '192k',
-             str(ec_mp4)], silent=True)
-        scene_infos.append({
-            'idx': ec_idx, 'image': str(end_card_path),
-            'text': '', 'narration_duration': 0, 'hold_sec': 0,
-            'scene_duration': 3.0, 'mp4': str(ec_mp4), 'audio': str(ec_wav),
-        })
-        print(f'  End card OK')
+        ecp = tmp_dir / 'end_card.png'
+        result = generate_title_card(end_card_text, ecp, width, height, bg_color=card_bg)
+        if result and result.exists():
+            end_card_path = result
+            print(f'[end] End card: {end_card_text}')
+            ec_idx = len(scene_infos)
+            ec_wav = audio_dir / f'{ec_idx:03d}_end.wav'
+            ec_srt = tmp_dir / f'{ec_idx:03d}_end.srt'
+            ec_mp4 = scene_dir / f'{ec_idx:03d}_end.mp4'
+            make_silent_audio(ec_wav, end_card_duration)
+            make_scene_srt([], ec_srt)
+            run(['ffmpeg', '-y', '-loop', '1', '-i', str(end_card_path), '-i', str(ec_wav),
+                 '-vf', f'scale={width}:{height}:force_original_aspect_ratio=decrease,pad={width}:{height}:(ow-iw)/2:(oh-ih)/2:color=black',
+                 '-r', str(fps), '-t', f'{end_card_duration:.1f}', '-shortest',
+                 '-c:v', 'libx264', '-pix_fmt', 'yuv420p', '-c:a', 'aac', '-b:a', '192k',
+                 str(ec_mp4)], silent=True)
+            scene_infos.append({
+                'idx': ec_idx, 'image': str(end_card_path),
+                'text': '', 'narration_duration': 0, 'hold_sec': 0,
+                'scene_duration': end_card_duration, 'mp4': str(ec_mp4), 'audio': str(ec_wav),
+            })
+            print(f'  End card OK')
+        else:
+            print('  [warn] 封尾页生成失败，跳过')
 
     print(f'\nConcat {len(scene_infos)} scenes ... ', end='', flush=True)
     update_progress('合并场景...')
@@ -617,6 +692,13 @@ def main():
     print(f'  字幕 : {final_srt}')
     if bgm_path:
         print(f'  BGM  : {bgm_path}')
+
+    # 清理临时文件
+    try:
+        shutil.rmtree(tmp_dir, ignore_errors=True)
+        print('  临时文件已清理')
+    except Exception:
+        pass
 
 
 if __name__ == '__main__':

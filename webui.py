@@ -435,7 +435,7 @@ function lightbox(i){
 
 /* ── 拖拽排序 ── */
 let dragFrom=null,dragOverIdx=null;
-function dragS(i){dragFrom=i;event.dataTransfer.effectAllowed='move'}
+function dragS(i,e){dragFrom=i;e.dataTransfer.effectAllowed='move'}
 function dragEnter(i){if(dragFrom===null||dragFrom===i)return;dragOverIdx=i;
   document.querySelectorAll('.scene').forEach(el=>el.classList.remove('drag-over'));
   document.querySelectorAll('.scene')[i]?.classList.add('drag-over');
@@ -458,7 +458,7 @@ function pain(){
     if(s._loading&&!hasImg)inner='<div class="loader"></div>';
     let nm=s._name||(s.image?s.image.split('/').pop().split('\\').pop():'');
     let pathCls='path'+(s._error?' err':'');
-    h+='<div class="scene" draggable="true" ondragstart="dragS('+i+')" ondragover="event.preventDefault();dragEnter('+i+')" ondragleave="dragLV()" ondrop="dropS('+i+',event)">'
+    h+='<div class="scene" draggable="true" ondragstart="dragS('+i+',event)" ondragover="event.preventDefault();dragEnter('+i+')" ondragleave="dragLV()" ondrop="dropS('+i+',event)">'
       +'<div class="grip" title="拖拽排序">⠿</div>'
       +'<div class="idx">#'+(i+1)+'</div>'
       +'<div class="'+cls+'" onclick="lightbox('+i+')">'+inner+'</div>'
@@ -798,7 +798,8 @@ class H(SimpleHTTPRequestHandler):
             def mon():
                 j = JOBS.get(rid)
                 if not j:
-                    stderr_fh.close()
+                    try: stderr_fh.close()
+                    except Exception: pass
                     return
                 last_progress = ''
                 stall_count = 0
@@ -826,7 +827,6 @@ class H(SimpleHTTPRequestHandler):
                             proc.kill()
                             j['progress'] = '超时（渲染卡死）'
                             j['error'] = '渲染超时：60 秒无进度更新'
-                            stderr_fh.close()
                             return
                     # 进程结束
                     if proc.returncode == 0:

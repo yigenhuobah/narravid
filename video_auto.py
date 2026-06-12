@@ -144,16 +144,37 @@ def build_sentence_segments(text: str, narration_duration: float, offset: float 
 
 
 def subtitle_filter_arg(srt_path: Path, style_override: str = None) -> str:
+    # ffmpeg subtitles filter 路径转义规则：
+    #   路径用单引号包裹，内部特殊字符用 \ 转义：: \ ' [ ]
+    #   但单引号在单引号字符串内无法用 \ 转义，
+    #   所以路径含单引号时改用 filename 选项避免问题
     path = str(srt_path.resolve()).replace('\\', '/')
-    path = path.replace(':', '\\:').replace("'", r"\'")
-    if style_override:
-        style = style_override
+    has_apostrophe = "'" in path
+    if has_apostrophe:
+        # 含单引号的路径：使用 filename= 选项，用双引号包裹
+        # 双引号内需要转义：\ : "
+        for ch in ['\\', ':', '"']:
+            path = path.replace(ch, '\\' + ch)
+        if style_override:
+            style = style_override
+        else:
+            style = (
+                'FontName=Microsoft YaHei,FontSize=16,PrimaryColour=&H00FFFFFF,'
+                'OutlineColour=&H64000000,BorderStyle=3,Outline=1,Shadow=0,MarginV=30,Alignment=2'
+            )
+        return f'subtitles=filename="{path}":force_style=\'{style}\''
     else:
-        style = (
-            'FontName=Microsoft YaHei,FontSize=16,PrimaryColour=&H00FFFFFF,'
-            'OutlineColour=&H64000000,BorderStyle=3,Outline=1,Shadow=0,MarginV=30,Alignment=2'
-        )
-    return f"subtitles='{path}':force_style='{style}'"
+        # 常规路径：单引号包裹，转义 : [ ]
+        for ch in [':', '[', ']']:
+            path = path.replace(ch, '\\' + ch)
+        if style_override:
+            style = style_override
+        else:
+            style = (
+                'FontName=Microsoft YaHei,FontSize=16,PrimaryColour=&H00FFFFFF,'
+                'OutlineColour=&H64000000,BorderStyle=3,Outline=1,Shadow=0,MarginV=30,Alignment=2'
+            )
+        return f"subtitles='{path}':force_style='{style}'"
 
 
 def edge_tts_available() -> bool:
@@ -332,7 +353,6 @@ def mix_bgm(voice_audio: Path, bgm_path: Path, out_path: Path, duck_ratio: float
              str(out_path)], silent=True)
     except Exception as e:
         print(f'  BGM 混音失败({e})，使用原音频')
-        import shutil
         shutil.copy2(str(voice_audio), str(out_path))
 
 
@@ -479,6 +499,12 @@ def main():
     rate = int(manifest.get('rate', 0))
     volume = int(manifest.get('volume', 100))
     speech_speed = args.speed or float(manifest.get('speech_speed', DEFAULT_SPEECH_SPEED))
+    if speech_speed < 0.5:
+        print(f'  [warn] 语速 {speech_speed} 过低，已调整为 0.5')
+        speech_speed = 0.5
+    elif speech_speed > 3.0:
+        print(f'  [warn] 语速 {speech_speed} 过高，已调整为 3.0')
+        speech_speed = 3.0
     pad_sec = float(manifest.get('scene_tail_silence_sec', 0.16))
     burn_subtitles = not args.no_burn and bool(manifest.get('burn_subtitles', True))
     bgm_path = args.bgm
@@ -712,6 +738,10 @@ def main():
     # 清理临时文件
     try:
         shutil.rmtree(tmp_dir, ignore_errors=True)
+        # 清理 WebUI 写入的 card 文本文件
+        for f in out_dir.glob('_*_card.txt'):
+            try: f.unlink()
+            except Exception: pass
         print('  临时文件已清理')
     except Exception:
         pass

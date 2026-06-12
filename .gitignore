@@ -22,6 +22,13 @@ stderr.log
 __pycache__/
 *.pyc
 
+# test/debug scripts
+_remove_emoji.py
+_smoke_test.py
+_test_*.py
+_check_*.py
+_debug_*.py
+
 # os/editor
 .DS_Store
 Thumbs.db

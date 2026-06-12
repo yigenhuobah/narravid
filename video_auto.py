@@ -447,7 +447,9 @@ def main():
     parser.add_argument('--output-dir', help='输出目录 (覆盖 manifest 中的 output_dir)')
     parser.add_argument('--bgm', help='背景音乐文件路径 (mp3/wav)')
     parser.add_argument('--title-card', help='自动生成标题页 (输入标题文字)')
+    parser.add_argument('--title-card-file', help='从 UTF-8 文件读取标题页文字 (优先于 --title-card)')
     parser.add_argument('--end-card', help='自动生成封尾页 (输入文字，如"感谢观看")')
+    parser.add_argument('--end-card-file', help='从 UTF-8 文件读取封尾页文字 (优先于 --end-card)')
     parser.add_argument('--card-duration', type=float, default=3.0,
                         help='标题页停留秒数 (默认 3.0)')
     parser.add_argument('--end-card-duration', type=float, default=0,
@@ -481,8 +483,22 @@ def main():
     burn_subtitles = not args.no_burn and bool(manifest.get('burn_subtitles', True))
     bgm_path = args.bgm
     bgm_volume = max(0.0, min(1.0, args.bgm_volume))
-    title_card_text = args.title_card
-    end_card_text = args.end_card
+    title_card_text = None
+    if args.title_card_file:
+        try:
+            title_card_text = Path(args.title_card_file).read_text(encoding='utf-8').strip()
+        except Exception as e:
+            print(f'  [warn] 无法读取标题页文件: {e}')
+    if not title_card_text:
+        title_card_text = args.title_card
+    end_card_text = None
+    if args.end_card_file:
+        try:
+            end_card_text = Path(args.end_card_file).read_text(encoding='utf-8').strip()
+        except Exception as e:
+            print(f'  [warn] 无法读取封尾页文件: {e}')
+    if not end_card_text:
+        end_card_text = args.end_card
     card_duration = max(1.0, args.card_duration)
     end_card_duration = max(1.0, args.end_card_duration) if args.end_card_duration > 0 else card_duration
     subtitle_style = args.subtitle_style

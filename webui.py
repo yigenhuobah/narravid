@@ -5,7 +5,7 @@ narravid Web UI v6 — 图片上传、缩略图预览、BGM 管理、在线预�
   python webui.py
   python webui.py --port 8080
 """
-import argparse, base64, json, os, shutil, subprocess, sys, threading, time, uuid
+import argparse, base64, json, os, re, shutil, subprocess, sys, threading, time, uuid
 from pathlib import Path
 from http.server import HTTPServer, SimpleHTTPRequestHandler
 import urllib.parse
@@ -725,7 +725,9 @@ class H(SimpleHTTPRequestHandler):
                 self._json({'error': f'BGM 文件超过 {MAX_BGM_SIZE // 1024 // 1024}MB 限制'}, 413); return
             elif len(raw) > MAX_IMAGE_SIZE:
                 self._json({'error': f'图片超过 {MAX_IMAGE_SIZE // 1024 // 1024}MB 限制'}, 413); return
-            fp = UPLOAD_DIR / f'{uuid.uuid4().hex}_{name}'
+            # sanitize filename: replace non-ASCII chars to avoid path/encoding issues
+            safe_name = re.sub(r'[^\x20-\x7e]', '_', name)
+            fp = UPLOAD_DIR / f'{uuid.uuid4().hex}_{safe_name}'
             fp.write_bytes(raw)
             self._json({'path': str(fp.resolve())})
 
@@ -750,12 +752,23 @@ class H(SimpleHTTPRequestHandler):
                     if bvol is not None and isinstance(bvol, (int, float)) and 0.0 <= bvol <= 1.0:
                         cmd += ['--bgm-volume', str(bvol)]
             if tc:
-                cmd += ['--title-card', tc]
+                # write non-ASCII title card text to temp file to avoid cmdline encoding issues
+                if any(ord(c) > 127 for c in tc):
+                    tcf = out / '_title_card.txt'
+                    tcf.write_text(tc, encoding='utf-8')
+                    cmd += ['--title-card-file', str(tcf)]
+                else:
+                    cmd += ['--title-card', tc]
                 cd = data.get('card_duration')
                 if cd and isinstance(cd, (int, float)) and cd >= 1.0:
                     cmd += ['--card-duration', str(cd)]
             if ec:
-                cmd += ['--end-card', ec]
+                if any(ord(c) > 127 for c in ec):
+                    ecf = out / '_end_card.txt'
+                    ecf.write_text(ec, encoding='utf-8')
+                    cmd += ['--end-card-file', str(ecf)]
+                else:
+                    cmd += ['--end-card', ec]
                 ecd = data.get('end_card_duration')
                 if ecd and isinstance(ecd, (int, float)) and ecd >= 1.0:
                     cmd += ['--end-card-duration', str(ecd)]

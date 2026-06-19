@@ -53,7 +53,16 @@ python video_auto.py my-video.json --title-card "数据分析" --no-burn
 | `--engine` | TTS 引擎 (`edge` / `system`) | 自动检测 |
 | `--workers` | 并行线程数 | 4 |
 | `--bgm` | 背景音乐文件路径 | — |
+| `--bgm-volume` | BGM 音量 (0.0~1.0) | 0.25 |
 | `--title-card` | 标题页文字 | — |
+| `--title-card-file` | 从文件读取标题页文字 | — |
+| `--end-card` | 封尾页文字 | — |
+| `--end-card-file` | 从文件读取封尾页文字 | — |
+| `--card-duration` | 标题页停留秒数 | 3.0 |
+| `--end-card-duration` | 封尾页停留秒数 | 同标题页 |
+| `--subtitle-style` | 自定义字幕 ASS 样式 | 默认样式 |
+| `--title-card-bg` | 标题页/封尾页背景色 | #1a1a2e |
+| `--no-smart-comma` | 禁用逗号智能断句 | — |
 | `--no-burn` | 不烧录字幕 | — |
 | `--output-dir` | 输出目录 | manifest 中的值 |
 

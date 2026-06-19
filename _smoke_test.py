@@ -65,9 +65,9 @@ check('Image upload', 'path' in r1)
 # Valid WAV: 1 second, 22050 Hz, mono, 16-bit PCM with actual samples
 sample_rate = 22050
 num_samples = sample_rate
-wav = struct.pack('<4sI4sIHHIIHH4sI',
+wav = struct.pack('<4sI4s4sIHHIIHH4sI',
     b'RIFF', 36 + num_samples * 2, b'WAVE',
-    16, 1, 1, sample_rate, sample_rate * 2, 2, 16,
+    b'fmt ', 16, 1, 1, sample_rate, sample_rate * 2, 2, 16,
     b'data', num_samples * 2)
 wav += b'\x00\x00' * num_samples  # silence
 r2 = post_json(f'{BASE}/api/upload', {'name': 'bgm.wav', 'data': base64.b64encode(wav).decode(), 'kind': 'bgm'})

@@ -5,6 +5,27 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [v1.5.1] - 2026-06-19
+
+### Fixed — exe 打包兼容性修复
+
+- **`_bundled_ffmpeg.py`**: `get_ffmpeg()` / `get_ffprobe()` 返回绝对路径，避免 exe 环境下子进程找不到 ffmpeg
+- **`video_auto.py`**: `synthesize_edge_tts` 从子进程 `python -m edge_tts` 改为直接使用 `edge_tts.Communicate` Python API
+- **`video_auto.py`**: 所有 `ffmpeg` / `ffprobe` 硬编码命令替换为通过 `_bundled_ffmpeg` 获取的绝对路径
+- **`video_auto.py`**: `edge_tts_available()` 从 `find_spec` 改为 `try import`（exe 中更可靠）
+- **`video_auto.py`**: `synthesize_audio_with_retry` 异常捕获从 `CalledProcessError` 改为通用 `Exception`
+- **`webui.py`**: `/api/render` 从 `subprocess.Popen([sys.executable, ...])` 改为子线程直接调用 `video_auto.main()`（exe 中 `sys.executable` 非 python）
+- **`webui.py`**: `/api/status` 和 `/api/cancel` 适配新的线程模式
+- **CI**: 添加 `--hidden-import edge_tts`、`--collect-all edge_tts`、`--collect-all matplotlib`
+
+### Added
+
+- **渲染取消机制**: `video_auto.py` 新增 `CancelToken` 全局取消令牌，`webui.py` `/api/cancel` 可真正中断渲染
+- **并发安全**: `webui.py` 新增 `RENDER_LOCK` 全局渲染锁，防止多渲染任务并发导致全局状态污染
+- **中文字体加载**: `generate_title_card` 增加打包字体查找逻辑，提升 exe 环境下标题页中文显示可靠性
+- `requirements.txt` 显式声明 `aiohttp` 依赖
+- README CLI 参数表补全所有参数
+
 ## [v1.5.0] - 2026-06-11
 
 ### Added

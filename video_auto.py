@@ -319,6 +319,28 @@ def make_global_srt(scene_infos, out_path: Path):
 
 # ── title card ───────────────────────────────────────────────────
 
+def _find_zh_font():
+    """查找可用的中文字体路径，优先系统字体，其次打包字体"""
+    # 系统字体候选
+    system_fonts = [
+        'C:/Windows/Fonts/msyh.ttc',    # Microsoft YaHei
+        'C:/Windows/Fonts/simhei.ttf',   # SimHei
+        'C:/Windows/Fonts/msyhl.ttc',    # YaHei Light
+    ]
+    for f in system_fonts:
+        if Path(f).exists():
+            return f
+    # 打包字体（exe 模式下 _MEIPASS 或同级 fonts/ 目录）
+    try:
+        base = Path(sys._MEIPASS)
+    except AttributeError:
+        base = Path(__file__).resolve().parent
+    bundled = base / 'fonts' / 'msyh.ttc'
+    if bundled.exists():
+        return str(bundled)
+    return None
+
+
 def generate_title_card(title: str, out_path: Path, width: int, height: int, bg_color: str = '#1a1a2e'):
     """用 matplotlib 生成标题页"""
     try:
@@ -330,17 +352,27 @@ def generate_title_card(title: str, out_path: Path, width: int, height: int, bg_
         print('  [warn] matplotlib not available, skipping title card')
         return None
 
+    # 加载中文字体
+    zh_font_path = _find_zh_font()
+    if zh_font_path:
+        fm.fontManager.addfont(zh_font_path)
+        font_prop = fm.FontProperties(fname=zh_font_path)
+        font_name = font_prop.get_name()
+    else:
+        font_prop = None
+        font_name = 'sans-serif'
+        print('  [warn] 未找到中文字体，标题页可能显示方块')
+
     fig, ax = plt.subplots(figsize=(width / 100, height / 100), dpi=100)
     fig.patch.set_facecolor(bg_color)
     ax.set_facecolor(bg_color)
     ax.set_xlim(0, width)
     ax.set_ylim(0, height)
     ax.axis('off')
-    zh_fonts = ['Microsoft YaHei', 'SimHei', 'PingFang SC', 'Noto Sans CJK SC', 'WenQuanYi Micro Hei', 'sans-serif']
     ax.text(width / 2, height / 2 + 20, title, fontsize=48, fontweight='bold',
-            color='white', ha='center', va='center', fontfamily=zh_fonts)
+            color='white', ha='center', va='center', fontproperties=font_prop or font_name)
     ax.text(width / 2, height / 2 - 50, 'narravid', fontsize=18,
-            color='#888888', ha='center', va='center', fontfamily=zh_fonts)
+            color='#888888', ha='center', va='center', fontproperties=font_prop or font_name)
     plt.tight_layout(pad=0)
     fig.savefig(out_path, dpi=100, facecolor=fig.get_facecolor())
     plt.close(fig)
@@ -366,6 +398,33 @@ def mix_bgm(voice_audio: Path, bgm_path: Path, out_path: Path, duck_ratio: float
 
 
 # ── 并行场景处理 ────────────────────────────────────────────────
+
+class CancelToken:
+    """全局取消令牌，供 WebUI 外部控制渲染中断"""
+    _cancelled = False
+    _lock = threading.Lock()
+
+    @classmethod
+    def set_cancelled(cls):
+        with cls._lock:
+            cls._cancelled = True
+
+    @classmethod
+    def is_cancelled(cls) -> bool:
+        with cls._lock:
+            return cls._cancelled
+
+    @classmethod
+    def reset(cls):
+        with cls._lock:
+            cls._cancelled = False
+
+
+def _check_cancel():
+    """在关键步骤检查是否已取消，如已取消则抛出异常"""
+    if CancelToken.is_cancelled():
+        raise RuntimeError('渲染已被用户取消')
+
 
 class ProgressTracker:
     """线程安全的进度追踪器"""
@@ -416,6 +475,8 @@ def process_single_scene(idx: int, scene: dict, project_root: Path,
 
     hold_sec = float(scene.get('hold_sec', 0.0))
     raw_audio = tmp_dir / (f'{idx:03d}.raw.mp3' if tts_engine == 'edge' else f'{idx:03d}.raw.wav')
+
+    _check_cancel()
     wav = audio_dir / f'{idx:03d}.wav'
     srt = tmp_dir / f'{idx:03d}.srt'
     mp4 = scene_dir / f'{idx:03d}.mp4'
@@ -442,6 +503,7 @@ def process_single_scene(idx: int, scene: dict, project_root: Path,
     if burn_subtitles and segments:
         vf += ',' + subtitle_filter_arg(srt, subtitle_style)
 
+    _check_cancel()
     progress.report(idx, 'Render ...')
     run([FFMPEG, '-y', '-loop', '1', '-i', str(image), '-i', str(wav),
          '-vf', vf, '-r', str(fps), '-t', f'{scene_duration:.3f}', '-shortest',
@@ -702,6 +764,7 @@ def main():
         else:
             print('  [warn] 封尾页生成失败，跳过')
 
+    _check_cancel()
     print(f'\nConcat {len(scene_infos)} scenes ... ', end='', flush=True)
     update_progress('合并场景...')
     concat_txt = tmp_dir / 'concat.txt'
@@ -718,6 +781,7 @@ def main():
 
     # BGM mixing
     if bgm_path and Path(bgm_path).exists():
+        _check_cancel()
         print('Mix BGM ... ', end='', flush=True)
         update_progress('混入 BGM...')
         voice_total = audio_dir / '_narration_full.wav'

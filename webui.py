@@ -604,6 +604,7 @@ init();
 '''
 
 JOBS = {}
+RENDER_LOCK = threading.Lock()  # 全局渲染锁：同时只允许一个渲染任务执行
 
 
 def _check_edge_tts():
@@ -784,6 +785,7 @@ class H(SimpleHTTPRequestHandler):
             # 在子线程中直接调用 video_auto.main()，不再用 subprocess
             # 这样 exe 模式下无需依赖 sys.executable 指向 python 解释器
             import video_auto as _va
+            _va.CancelToken.reset()  # 重置取消令牌
 
             cancel_event = threading.Event()
             JOBS[rid] = {'proc': None, 'progress': 'TTS 生成中...', 'video': '', 'srt': '',
@@ -799,31 +801,34 @@ class H(SimpleHTTPRequestHandler):
                 j = JOBS.get(rid)
                 if not j:
                     return
-                try:
-                    # 设置环境
-                    os.environ.update(env)
-                    os.chdir(str(ROOT))
-                    sys.argv = cmd
-                    _va.main()
-                    # 成功完成
-                    mp4s = sorted(out.glob('*.mp4'))
-                    if mp4s:
-                        j['video'] = '/' + str(mp4s[0].relative_to(ROOT)).replace('\\', '/')
-                    j['progress'] = '完成'
-                except Exception as e:
-                    import traceback
-                    tb = traceback.format_exc()
-                    err_file = out / '_stderr.log'
-                    err_file.write_text(tb, encoding='utf-8', errors='ignore')
-                    j['error'] = str(e)[-500:]
-                    j['progress'] = f'失败: {e}'[:200]
-                finally:
-                    # 恢复原始状态
-                    sys.argv = orig_argv
-                    os.chdir(orig_cwd)
-                    os.environ.clear()
-                    os.environ.update(orig_env)
-                    j['done'] = True
+                with RENDER_LOCK:
+                    if j.get('done'):
+                        return  # 已被取消
+                    try:
+                        # 设置环境
+                        os.environ.update(env)
+                        os.chdir(str(ROOT))
+                        sys.argv = cmd
+                        _va.main()
+                        # 成功完成
+                        mp4s = sorted(out.glob('*.mp4'))
+                        if mp4s:
+                            j['video'] = '/' + str(mp4s[0].relative_to(ROOT)).replace('\\', '/')
+                        j['progress'] = '完成'
+                    except Exception as e:
+                        import traceback
+                        tb = traceback.format_exc()
+                        err_file = out / '_stderr.log'
+                        err_file.write_text(tb, encoding='utf-8', errors='ignore')
+                        j['error'] = str(e)[-500:]
+                        j['progress'] = f'失败: {e}'[:200]
+                    finally:
+                        # 恢复原始状态
+                        sys.argv = orig_argv
+                        os.chdir(orig_cwd)
+                        os.environ.clear()
+                        os.environ.update(orig_env)
+                        j['done'] = True
 
             def mon():
                 """监控线程：检查进度 + 超时检测"""
@@ -872,6 +877,12 @@ class H(SimpleHTTPRequestHandler):
                 if j.get('cancel_event'):
                     j['cancel_event'].set()
                 j['progress'] = '已取消'
+                # 设置全局取消令牌，让 video_auto 内部检测并中断
+                try:
+                    import video_auto as _va
+                    _va.CancelToken.set_cancelled()
+                except Exception:
+                    pass
             self._json({'status': 'ok'})
 
         elif p.path == '/api/clean':

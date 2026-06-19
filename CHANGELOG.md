@@ -5,6 +5,29 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [v1.6.0] - 2026-06-20
+
+### Added
+
+- **字幕样式可视化编辑器**：设置面板新增字幕样式卡片
+  - 字体选择（微软雅黑/黑体/宋体/楷体/思源黑体/苹方）
+  - 字号、描边粗细、底部边距数值调节
+  - 文字颜色、描边颜色拾色器 + HEX 输入联动
+  - 粗体开关、对齐方式选择（底部居中/左/右、顶部居中、居中）
+  - 实时预览框：所见即所得展示字幕效果（字体、颜色、描边、位置）
+  - 一键重置默认样式
+  - 生成 ASS force_style 字符串，通过 `--subtitle-style` 传递给 video_auto
+
+- **模板管理增强**：
+  - 模板保存/加载包含字幕样式配置
+  - 模板重命名：对话框内点击 ✎ 直接编辑名称（Enter 确认 / Esc 取消）
+  - 模板对话框 UI 优化：操作按钮分区（重命名 / 删除）
+
+### Changed
+
+- 字幕样式编辑器响应式适配：768px 以下单列布局
+- 模板列表项布局调整为 info + actions 两栏
+
 ## [v1.5.1] - 2026-06-19
 
 ### Fixed — exe 打包兼容性修复

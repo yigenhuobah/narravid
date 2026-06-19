@@ -150,16 +150,35 @@ body{font-family:"Microsoft YaHei","PingFang SC","Noto Sans SC",sans-serif;backg
 .empty p{font-size:15px;margin-bottom:4px}
 .empty .hint{font-size:13px;opacity:.6}
 
+/* ── 字幕样式编辑器 ── */
+.subtitle-card{max-width:1120px;margin:12px auto 0;padding:0 24px}
+.subtitle-card .card{background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);padding:16px 18px}
+.subtitle-card .card h3{font-size:12px;font-weight:600;color:var(--muted);text-transform:uppercase;letter-spacing:.5px;margin-bottom:10px}
+.sub-style-grid{display:grid;grid-template-columns:1fr 1fr 1fr;gap:10px;margin-bottom:12px}
+.sub-style-grid .field{margin-bottom:0}
+.sub-style-grid .field select,.sub-style-grid .field input[type=number]{width:100%}
+.color-field{display:flex;align-items:center;gap:6px}
+.color-field input[type=color]{width:32px;height:32px;border:1px solid var(--border2);border-radius:6px;background:none;cursor:pointer;padding:1px}
+.color-field input[type=text]{flex:1;font-size:12px;padding:6px 8px;border:1px solid var(--border2);border-radius:6px;background:var(--surface2);color:var(--ink);outline:none;font-family:monospace}
+.sub-preview{background:#000;border-radius:8px;padding:20px;text-align:center;margin-top:8px;position:relative;overflow:hidden;min-height:80px;display:flex;align-items:flex-end;justify-content:center}
+.sub-preview .preview-text{font-size:18px;font-weight:600;line-height:1.4;padding:8px 16px;border-radius:4px;transition:.2s;max-width:80%}
+.sub-style-actions{display:flex;gap:8px;margin-top:8px}
+.sub-style-actions .btn{padding:5px 12px;font-size:12px}
+
 /* ── 模板对话框 ── */
 .dialog-overlay{position:fixed;inset:0;background:rgba(0,0,0,.6);z-index:280;display:flex;align-items:center;justify-content:center}
 .dialog{background:var(--surface);border:1px solid var(--border2);border-radius:16px;padding:24px;min-width:320px;max-width:500px;max-height:70vh;overflow-y:auto;box-shadow:0 12px 80px rgba(0,0,0,.8)}
 .dialog h2{font-size:18px;font-weight:700;margin-bottom:16px}
 .dialog .tpl-item{display:flex;justify-content:space-between;align-items:center;padding:10px 12px;border:1px solid var(--border);border-radius:8px;margin-bottom:8px;cursor:pointer;transition:.15s}
 .dialog .tpl-item:hover{border-color:var(--accent);background:var(--surface2)}
+.dialog .tpl-item .tpl-info{flex:1;min-width:0}
 .dialog .tpl-item .tpl-name{font-weight:600;font-size:14px}
+.dialog .tpl-item .tpl-name.editing{outline:1px solid var(--accent);background:var(--surface2);padding:2px 6px;border-radius:4px}
 .dialog .tpl-item .tpl-meta{font-size:12px;color:var(--muted)}
-.dialog .tpl-item .tpl-del{color:#666;cursor:pointer;font-size:16px;margin-left:8px;transition:.15s}
-.dialog .tpl-item .tpl-del:hover{color:#e74c3c}
+.dialog .tpl-item .tpl-actions{display:flex;gap:4px;align-items:center}
+.dialog .tpl-item .tpl-btn{color:#666;cursor:pointer;font-size:14px;padding:2px 6px;border-radius:4px;transition:.15s}
+.dialog .tpl-item .tpl-btn:hover{color:var(--accent);background:rgba(232,93,38,.1)}
+.dialog .tpl-item .tpl-btn.del:hover{color:#e74c3c;background:rgba(231,76,60,.1)}
 .dialog .tpl-empty{color:var(--muted);text-align:center;padding:20px;font-size:14px}
 .dialog .tpl-save-row{display:flex;gap:8px;margin-top:12px}
 .dialog .tpl-save-row input{flex:1}
@@ -167,6 +186,7 @@ body{font-family:"Microsoft YaHei","PingFang SC","Noto Sans SC",sans-serif;backg
 /* ── 响应式 ── */
 @media(max-width:768px){
   .panel{grid-template-columns:1fr}
+  .sub-style-grid{grid-template-columns:1fr}
   .scene .thumb{width:80px;height:50px}
   .header h1{font-size:24px}
 }
@@ -260,6 +280,73 @@ body{font-family:"Microsoft YaHei","PingFang SC","Noto Sans SC",sans-serif;backg
   </div>
 </div>
 
+<!-- 字幕样式编辑器 -->
+<div class="subtitle-card">
+  <div class="card">
+    <h3>✏ 字幕样式</h3>
+    <div class="sub-style-grid">
+      <div class="field">
+        <label>字体</label>
+        <select id="ssFont">
+          <option value="Microsoft YaHei" selected>微软雅黑</option>
+          <option value="SimHei">黑体</option>
+          <option value="SimSun">宋体</option>
+          <option value="KaiTi">楷体</option>
+          <option value="Noto Sans SC">思源黑体</option>
+          <option value="PingFang SC">苹方</option>
+        </select>
+      </div>
+      <div class="field">
+        <label>字号</label>
+        <input type="number" id="ssSize" value="16" min="8" max="72" step="1">
+      </div>
+      <div class="field">
+        <label>描边粗细</label>
+        <input type="number" id="ssOutline" value="1" min="0" max="10" step="0.5">
+      </div>
+      <div class="field">
+        <label>文字颜色</label>
+        <div class="color-field">
+          <input type="color" id="ssColorPicker" value="#FFFFFF">
+          <input type="text" id="ssColor" value="FFFFFF" maxlength="6">
+        </div>
+      </div>
+      <div class="field">
+        <label>描边颜色</label>
+        <div class="color-field">
+          <input type="color" id="ssOutlinePicker" value="#000000">
+          <input type="text" id="ssOutlineColor" value="000000" maxlength="6">
+        </div>
+      </div>
+      <div class="field">
+        <label>底部边距</label>
+        <input type="number" id="ssMargin" value="30" min="0" max="200" step="5">
+      </div>
+    </div>
+    <div style="display:flex;gap:10px;align-items:center;margin-bottom:8px">
+      <label class="chk-row" style="margin:0"><input type="checkbox" id="ssBold">粗体</label>
+      <div class="field" style="margin:0;flex:0 0 auto">
+        <label>对齐</label>
+        <select id="ssAlign" style="font-size:12px;padding:5px 8px">
+          <option value="2" selected>底部居中</option>
+          <option value="1">底部左对齐</option>
+          <option value="3">底部右对齐</option>
+          <option value="8">顶部居中</option>
+          <option value="5">居中</option>
+        </select>
+      </div>
+    </div>
+    <div class="sub-preview" id="subPrev">
+      <div class="preview-text" id="subPrevText" style="font-family:'Microsoft YaHei',sans-serif;font-size:18px;color:#FFFFFF;text-shadow:0 0 1px #000,0 0 1px #000,0 0 1px #000,0 0 1px #000">字幕预览效果</div>
+    </div>
+    <div class="sub-style-actions">
+      <button class="btn" onclick="resetSubStyle()">重置默认</button>
+      <span style="flex:1"></span>
+      <span id="ssInfo" style="font-size:11px;color:var(--muted);align-self:center">实时预览字幕样式</span>
+    </div>
+  </div>
+</div>
+
 <div class="actions">
   <button class="btn primary" id="rb" onclick="render()">▶ 生成视频</button>
   <button class="btn" onclick="batch()">+ 添加图片</button>
@@ -303,10 +390,98 @@ function toast(msg,type){
   setTimeout(()=>{d.style.opacity='0';d.style.transition='opacity .3s';setTimeout(()=>d.remove(),300)},4000);
 }
 
+/* ── 字幕样式编辑器 ── */
+const SUB_DEFAULT={font:'Microsoft YaHei',size:16,color:'FFFFFF',outlineColor:'000000',outline:1,margin:30,align:2,bold:false};
+let subStyle={...SUB_DEFAULT};
+
+function hexToASS(h){return '&H00'+h}
+function assColorToHex(ass){let m=ass.match(/&H00([0-9A-Fa-f]{6})/);return m?m[1].toUpperCase():'FFFFFF'}
+
+function buildSubStyleStr(){
+  let s='FontName='+subStyle.font+',FontSize='+subStyle.size+
+    ',PrimaryColour='+hexToASS(subStyle.color)+
+    ',OutlineColour=&H64'+subStyle.outlineColor+
+    ',BorderStyle=3,Outline='+subStyle.outline+',Shadow=0'+
+    ',MarginV='+subStyle.margin+',Alignment='+subStyle.align;
+  if(subStyle.bold)s=s.replace('FontName=','FontName=')+',Bold=1';
+  return s
+}
+
+function updateSubPreview(){
+  let el=E('subPrevText');
+  el.style.fontFamily="'"+subStyle.font+"',sans-serif";
+  el.style.fontSize=Math.round(subStyle.size*1.1)+'px';
+  el.style.color='#'+subStyle.color;
+  el.style.fontWeight=subStyle.bold?'700':'400';
+  // 模拟描边：用多层 text-shadow
+  let o=subStyle.outline;
+  if(o>0){
+    let oc='#'+subStyle.outlineColor;
+    let shadows=[];
+    let steps=Math.ceil(o*2);
+    for(let dx=-steps;dx<=steps;dx++)for(let dy=-steps;dy<=steps;dy++){
+      if(dx*dx+dy*dy<=steps*steps)shadows.push(dx+'px '+dy+'px 0 '+oc);
+    }
+    el.style.textShadow=shadows.join(',');
+  }else{el.style.textShadow='none'}
+  // 对齐
+  let alignMap={'2':'center','1':'left','3':'right','8':'center','5':'center'};
+  let vAlignMap={'2':'flex-end','1':'flex-end','3':'flex-end','8':'flex-start','5':'center'};
+  el.style.textAlign=alignMap[subStyle.align]||'center';
+  E('subPrev').style.alignItems=vAlignMap[subStyle.align]||'flex-end';
+}
+
+function bindSubStyleControls(){
+  E('ssFont').onchange=e=>{subStyle.font=e.target.value;updateSubPreview()};
+  E('ssSize').oninput=e=>{subStyle.size=parseInt(e.target.value)||16;updateSubPreview()};
+  E('ssOutline').oninput=e=>{subStyle.outline=parseFloat(e.target.value)||0;updateSubPreview()};
+  E('ssMargin').oninput=e=>{subStyle.margin=parseInt(e.target.value)||0;updateSubPreview()};
+  E('ssAlign').onchange=e=>{subStyle.align=parseInt(e.target.value);updateSubPreview()};
+  E('ssBold').onchange=e=>{subStyle.bold=e.target.checked;updateSubPreview()};
+  // 颜色联动
+  E('ssColorPicker').oninput=e=>{subStyle.color=e.target.value.slice(1).toUpperCase();E('ssColor').value=subStyle.color;updateSubPreview()};
+  E('ssColor').oninput=e=>{let v=e.target.value.replace(/[^0-9A-Fa-f]/g,'').slice(0,6).toUpperCase();e.target.value=v;if(v.length===6){subStyle.color=v;E('ssColorPicker').value='#'+v;updateSubPreview()}};
+  E('ssOutlinePicker').oninput=e=>{subStyle.outlineColor=e.target.value.slice(1).toUpperCase();E('ssOutlineColor').value=subStyle.outlineColor;updateSubPreview()};
+  E('ssOutlineColor').oninput=e=>{let v=e.target.value.replace(/[^0-9A-Fa-f]/g,'').slice(0,6).toUpperCase();e.target.value=v;if(v.length===6){subStyle.outlineColor=v;E('ssOutlinePicker').value='#'+v;updateSubPreview()}};
+}
+
+function resetSubStyle(){
+  subStyle={...SUB_DEFAULT};
+  E('ssFont').value=subStyle.font;E('ssSize').value=subStyle.size;
+  E('ssOutline').value=subStyle.outline;E('ssMargin').value=subStyle.margin;
+  E('ssAlign').value=subStyle.align;E('ssBold').checked=subStyle.bold;
+  E('ssColor').value=subStyle.color;E('ssColorPicker').value='#'+subStyle.color;
+  E('ssOutlineColor').value=subStyle.outlineColor;E('ssOutlinePicker').value='#'+subStyle.outlineColor;
+  updateSubPreview();
+  toast('已重置为默认样式','ok');
+}
+
+function applySubStyleFromStr(str){
+  if(!str)return;
+  let m;
+  if(m=str.match(/FontName=([^,]+)/))subStyle.font=m[1];
+  if(m=str.match(/FontSize=(\d+)/))subStyle.size=parseInt(m[1]);
+  if(m=str.match(/PrimaryColour=&H00([0-9A-Fa-f]{6})/))subStyle.color=m[1].toUpperCase();
+  if(m=str.match(/OutlineColour=&H64([0-9A-Fa-f]{6})/))subStyle.outlineColor=m[1].toUpperCase();
+  if(m=str.match(/Outline=([\d.]+)/))subStyle.outline=parseFloat(m[1]);
+  if(m=str.match(/MarginV=(\d+)/))subStyle.margin=parseInt(m[1]);
+  if(m=str.match(/Alignment=(\d+)/))subStyle.align=parseInt(m[1]);
+  if(m=str.match(/Bold=(\d+)/))subStyle.bold=m[1]==='1';
+  // 同步 UI
+  E('ssFont').value=subStyle.font;E('ssSize').value=subStyle.size;
+  E('ssOutline').value=subStyle.outline;E('ssMargin').value=subStyle.margin;
+  E('ssAlign').value=subStyle.align;E('ssBold').checked=subStyle.bold;
+  E('ssColor').value=subStyle.color;E('ssColorPicker').value='#'+subStyle.color;
+  E('ssOutlineColor').value=subStyle.outlineColor;E('ssOutlinePicker').value='#'+subStyle.outlineColor;
+  updateSubPreview();
+}
+
 function init(){
   E('sp').oninput=()=>E('sv').textContent=parseFloat(E('sp').value).toFixed(2)+'x';
   E('bvol').oninput=()=>E('bv').textContent=Math.round(parseFloat(E('bvol').value)*100)+'%';
   E('bgmFile').onchange=uploadBGM;
+  bindSubStyleControls();
+  updateSubPreview();
   add();add();add();
   loadBGMList();
   checkTTS();
@@ -497,9 +672,11 @@ async function render(){
   if(uploading>0){alert('还有图片在上传中，请稍候');return}
   let bgm=E('bgmSel').value||null;
   let res=(E('res').value||'1920x1080').split('x');
+  let subStyleStr=buildSubStyleStr();
   let m={title:'narravid',width:parseInt(res[0]),height:parseInt(res[1]),tts_engine:ttsEngine,workers:parseInt(E('wk').value),
     voice:E('v').value,speech_speed:parseFloat(E('sp').value),burn_subtitles:E('bs').checked,
     bgm_volume:parseFloat(E('bvol').value),card_duration:parseFloat(E('tcd').value),
+    subtitle_style:subStyleStr,
     scenes:valid.map(s=>({image:s.image,text:s.text.trim(),hold_sec:s.hold||0}))};
   let body={manifest:m,bgm:bgm,
     title_card:E('tc').value.trim()||null,
@@ -553,7 +730,17 @@ async function showTemplates(){
   let dlg=document.createElement('div');dlg.className='dialog';
   let h='<h2>📋 模板</h2>';
   if(!tplList.length){h+='<div class="tpl-empty">暂无保存的模板</div>'}
-  else{tplList.forEach((t,i)=>{h+='<div class="tpl-item" onclick="loadTemplate(\''+t.id+'\')"><div><div class="tpl-name">'+esc(t.name)+'</div><div class="tpl-meta">'+t.count+' 场景 · '+t.date+'</div></div><div class="tpl-del" onclick="event.stopPropagation();delTemplate(\''+t.id+'\')">✕</div></div>'})}
+  else{tplList.forEach((t,i)=>{
+    h+='<div class="tpl-item" onclick="loadTemplate(\''+t.id+'\')">'+
+      '<div class="tpl-info">'+
+      '<div class="tpl-name" id="tplName_'+t.id+'">'+esc(t.name)+'</div>'+
+      '<div class="tpl-meta">'+t.count+' 场景 · '+t.date+'</div>'+
+      '</div>'+
+      '<div class="tpl-actions">'+
+      '<div class="tpl-btn" title="重命名" onclick="event.stopPropagation();renameTemplate(\''+t.id+'\',\''+esc(t.name)+'\')">✎</div>'+
+      '<div class="tpl-btn del" title="删除" onclick="event.stopPropagation();delTemplate(\''+t.id+'\')">✕</div>'+
+      '</div></div>'
+  })}
   h+='<div class="tpl-save-row"><input id="tplName" placeholder="模板名称" style="padding:8px 10px;border:1px solid var(--border2);border-radius:8px;background:var(--surface2);color:var(--ink);font-size:13px;outline:none"><button class="btn primary sm" onclick="saveTemplate()">保存当前</button></div>';
   dlg.innerHTML=h;overlay.appendChild(dlg);document.body.appendChild(overlay);
 }
@@ -564,7 +751,8 @@ async function saveTemplate(){
   let data={name,scenes:S.filter(s=>s.image).map(s=>({text:s.text,image:s.image,hold:s.hold})),
     voice:E('v').value,speed:E('sp').value,burn:E('bs').checked,
     resolution:E('res').value,title_card:E('tc').value,end_card:E('ec').value,
-    bgm_volume:E('bvol').value,workers:E('wk').value};
+    bgm_volume:E('bvol').value,workers:E('wk').value,
+    subtitle_style:buildSubStyleStr()};
   await fetch('/api/templates',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(data)});
   toast('模板已保存','ok');
   document.querySelector('.dialog-overlay')?.remove();
@@ -580,6 +768,7 @@ async function loadTemplate(id){
   if(t.end_card)E('ec').value=t.end_card;
   if(t.bgm_volume!==undefined)E('bvol').value=t.bgm_volume,E('bv').textContent=Math.round(parseFloat(t.bgm_volume)*100)+'%';
   if(t.workers)E('wk').value=t.workers;
+  if(t.subtitle_style)applySubStyleFromStr(t.subtitle_style);
   document.querySelector('.dialog-overlay')?.remove();
   toast('模板已加载','ok');
 }
@@ -587,6 +776,24 @@ async function delTemplate(id){
   await fetch('/api/templates/'+id,{method:'DELETE'});
   document.querySelector('.dialog-overlay')?.remove();
   showTemplates();
+}
+async function renameTemplate(id,oldName){
+  let el=E('tplName_'+id);
+  el.classList.add('editing');
+  el.contentEditable=true;el.focus();document.execCommand('selectAll',false,null);
+  let done=false;
+  const finish=async()=>{if(done)return;done=true;
+    el.contentEditable=false;el.classList.remove('editing');
+    let newName=el.textContent.trim();
+    if(!newName||newName===oldName){el.textContent=oldName;return}
+    try{
+      let r=await fetch('/api/templates/'+id,{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify({name:newName})});
+      if(r.ok){toast('已重命名','ok');showTemplates()}
+      else{el.textContent=oldName;toast('重命名失败','error')}
+    }catch(e){el.textContent=oldName;toast('重命名失败: '+e,'error')}
+  };
+  el.onblur=finish;
+  el.onkeydown=e=>{if(e.key==='Enter'){e.preventDefault();el.blur()}if(e.key==='Escape'){el.textContent=oldName;el.blur()}};
 }
 
 /* ── 清理旧文件 ── */
@@ -766,6 +973,10 @@ class H(SimpleHTTPRequestHandler):
                     cmd += ['--end-card-duration', str(ecd)]
             if not m.get('burn_subtitles', True):
                 cmd += ['--no-burn']
+            # 字幕样式
+            ss = m.get('subtitle_style')
+            if ss and isinstance(ss, str) and len(ss) < 500:
+                cmd += ['--subtitle-style', ss]
             engine = m.get('tts_engine')
             if engine and engine in ('edge', 'system'):
                 cmd += ['--engine', engine]
@@ -936,6 +1147,26 @@ class H(SimpleHTTPRequestHandler):
                 self._json(json.loads(tp.read_text(encoding='utf-8')))
             else:
                 self._json({'error': 'not found'}, 404)
+
+    def do_PUT(self):
+        p = urllib.parse.urlparse(self.path)
+        length = int(self.headers.get('Content-Length', 0))
+        body = self.rfile.read(length) if length else b''
+        if p.path.startswith('/api/templates/'):
+            tid = p.path.split('/')[-1]
+            tp = TEMPLATE_DIR / f'{tid}.json'
+            if not tp.exists():
+                self._json({'error': 'not found'}, 404); return
+            data = json.loads(body) if body else {}
+            tpl = json.loads(tp.read_text(encoding='utf-8'))
+            if 'name' in data:
+                tpl['name'] = data['name']
+            if 'subtitle_style' in data:
+                tpl['subtitle_style'] = data['subtitle_style']
+            tp.write_text(json.dumps(tpl, ensure_ascii=False, indent=2), encoding='utf-8')
+            self._json({'status': 'ok'})
+        else:
+            self._json({'error': 'not found'}, 404)
 
     def do_DELETE(self):
         p = urllib.parse.urlparse(self.path)

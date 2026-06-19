@@ -1,4 +1,4 @@
-﻿name: Build & Release EXE
+name: Build & Release EXE
 
 on:
   push:
@@ -30,11 +30,25 @@ jobs:
 
       - name: Build CLI exe
         run: |
-          pyinstaller --onefile --name narravid --console --add-binary "C:\ProgramData\chocolatey\lib\ffmpeg\tools\ffmpeg\bin\ffmpeg.exe;ffmpeg" --add-binary "C:\ProgramData\chocolatey\lib\ffmpeg\tools\ffmpeg\bin\ffprobe.exe;ffmpeg" video_auto.py
+          pyinstaller --onefile --name narravid --console ^
+            --add-binary "C:\ProgramData\chocolatey\lib\ffmpeg\tools\ffmpeg\bin\ffmpeg.exe;ffmpeg" ^
+            --add-binary "C:\ProgramData\chocolatey\lib\ffmpeg\tools\ffmpeg\bin\ffprobe.exe;ffmpeg" ^
+            --hidden-import edge_tts ^
+            --hidden-import _bundled_ffmpeg ^
+            --collect-all edge_tts ^
+            video_auto.py
 
       - name: Build WebUI exe
         run: |
-          pyinstaller --onefile --name narravid-webui --console --add-binary "C:\ProgramData\chocolatey\lib\ffmpeg\tools\ffmpeg\bin\ffmpeg.exe;ffmpeg" --add-binary "C:\ProgramData\chocolatey\lib\ffmpeg\tools\ffmpeg\bin\ffprobe.exe;ffmpeg" webui.py
+          pyinstaller --onefile --name narravid-webui --console ^
+            --add-binary "C:\ProgramData\chocolatey\lib\ffmpeg\tools\ffmpeg\bin\ffmpeg.exe;ffmpeg" ^
+            --add-binary "C:\ProgramData\chocolatey\lib\ffmpeg\tools\ffmpeg\bin\ffprobe.exe;ffmpeg" ^
+            --hidden-import edge_tts ^
+            --hidden-import _bundled_ffmpeg ^
+            --hidden-import video_auto ^
+            --collect-all edge_tts ^
+            --collect-all matplotlib ^
+            webui.py
 
       - name: Create Release
         uses: softprops/action-gh-release@v2

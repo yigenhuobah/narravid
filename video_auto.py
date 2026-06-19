@@ -18,7 +18,6 @@ narravid — 图片 + JSON 文案 → 解说视频，一键自动生成。
   - exe 打包后自带 ffmpeg，无需手动安装
 """
 import argparse
-import importlib.util
 import json
 import os
 import shutil
@@ -33,8 +32,11 @@ from pathlib import Path
 # ── 统一使用 _bundled_ffmpeg 模块定位自带 ffmpeg ──────────────────
 try:
     import _bundled_ffmpeg
+    FFMPEG = _bundled_ffmpeg.get_ffmpeg()
+    FFPROBE = _bundled_ffmpeg.get_ffprobe()
 except ImportError:
-    pass
+    FFMPEG = 'ffmpeg'
+    FFPROBE = 'ffprobe'
 
 DEFAULT_W = 1920
 DEFAULT_H = 1080
@@ -58,7 +60,7 @@ def run(cmd, silent=False):
 
 def ffprobe_duration(path: Path) -> float:
     out = subprocess.check_output([
-        'ffprobe', '-v', 'error', '-show_entries', 'format=duration',
+        FFPROBE, '-v', 'error', '-show_entries', 'format=duration',
         '-of', 'default=noprint_wrappers=1:nokey=1', str(path)
     ], text=True, encoding='utf-8').strip()
     return float(out)
@@ -178,7 +180,11 @@ def subtitle_filter_arg(srt_path: Path, style_override: str = None) -> str:
 
 
 def edge_tts_available() -> bool:
-    return importlib.util.find_spec('edge_tts') is not None
+    try:
+        import edge_tts  # noqa: F401
+        return True
+    except ImportError:
+        return False
 
 
 # ── manifest ─────────────────────────────────────────────────────
@@ -220,22 +226,25 @@ $s.Dispose()
 
 
 def synthesize_edge_tts(text: str, media_path: Path, voice: str, rate: int = 0, volume: int = 100):
+    """使用 edge-tts Python API 合成语音（不再起子进程，兼容 exe 打包）"""
     if not edge_tts_available():
         raise RuntimeError('edge-tts 未安装')
+    import edge_tts
+    import asyncio
     clean_text = text.replace('\ufffd', '').replace('�', '').strip()
-    txt_path = media_path.with_suffix('.txt')
-    txt_path.write_text(clean_text, encoding='utf-8')
-    cmd = [
-        sys.executable, '-m', 'edge_tts',
-        '--voice', voice,
-        '--file', str(txt_path),
-        '--write-media', str(media_path),
-    ]
-    if rate:
-        cmd += [f'--rate={int(rate):+d}%']
-    if volume != 100:
-        cmd += [f'--volume={int(volume) - 100:+d}%']
-    run(cmd, silent=True)
+    if not clean_text:
+        raise RuntimeError('edge-tts: 文本为空')
+    rate_str = f'{int(rate):+d}%' if rate else None
+    volume_str = f'{int(volume) - 100:+d}%' if volume != 100 else None
+    communicate = edge_tts.Communicate(
+        text=clean_text,
+        voice=voice,
+        rate=rate_str,
+        volume=volume_str,
+    )
+    asyncio.run(communicate.save(str(media_path)))
+    if not media_path.exists() or media_path.stat().st_size == 0:
+        raise RuntimeError('edge-tts: 合成文件为空或不存在')
 
 
 def synthesize_audio_with_retry(text: str, raw_audio_path: Path, engine: str, voice: str, rate: int = 0, volume: int = 100):
@@ -244,13 +253,13 @@ def synthesize_audio_with_retry(text: str, raw_audio_path: Path, engine: str, vo
             try:
                 synthesize_edge_tts(text, raw_audio_path, voice=voice, rate=rate, volume=volume)
                 return 'edge'
-            except subprocess.CalledProcessError:
+            except Exception:
                 if attempt < MAX_TTS_RETRIES:
                     time.sleep(3)
                 else:
                     try:
                         synthesize_system_tts(text, raw_audio_path.with_suffix('.raw.wav'), voice=DEFAULT_SYSTEM_VOICE, rate=rate, volume=volume)
-                        run(['ffmpeg', '-y', '-i', str(raw_audio_path.with_suffix('.raw.wav')),
+                        run([FFMPEG, '-y', '-i', str(raw_audio_path.with_suffix('.raw.wav')),
                              '-ar', '24000', '-ac', '1', str(raw_audio_path)], silent=True)
                         return 'system'
                     except Exception as fallback_err:
@@ -276,7 +285,7 @@ def process_audio(raw_audio_path: Path, out_path: Path, speed: float, pad_sec: f
     if not filters:
         shutil.copyfile(raw_audio_path, out_path)
         return source_duration
-    run(['ffmpeg', '-y', '-i', str(raw_audio_path),
+    run([FFMPEG, '-y', '-i', str(raw_audio_path),
          '-af', ','.join(filters),
          '-ar', '24000', '-ac', '1',
          '-t', f'{target_duration:.3f}',
@@ -285,7 +294,7 @@ def process_audio(raw_audio_path: Path, out_path: Path, speed: float, pad_sec: f
 
 
 def make_silent_audio(out_path: Path, duration: float):
-    run(['ffmpeg', '-y', '-f', 'lavfi', '-i', 'anullsrc=r=24000:cl=mono',
+    run([FFMPEG, '-y', '-f', 'lavfi', '-i', 'anullsrc=r=24000:cl=mono',
          '-t', f'{duration:.3f}', '-ar', '24000', '-ac', '1', str(out_path)], silent=True)
 
 
@@ -344,7 +353,7 @@ def mix_bgm(voice_audio: Path, bgm_path: Path, out_path: Path, duck_ratio: float
     """将 BGM 与配音混音，配音时 BGM 音量降到 duck_ratio；失败则降级用原音频"""
     dur = ffprobe_duration(voice_audio)
     try:
-        run(['ffmpeg', '-y',
+        run([FFMPEG, '-y',
              '-i', str(voice_audio),
              '-stream_loop', '-1', '-i', str(bgm_path),
              '-filter_complex',
@@ -434,7 +443,7 @@ def process_single_scene(idx: int, scene: dict, project_root: Path,
         vf += ',' + subtitle_filter_arg(srt, subtitle_style)
 
     progress.report(idx, 'Render ...')
-    run(['ffmpeg', '-y', '-loop', '1', '-i', str(image), '-i', str(wav),
+    run([FFMPEG, '-y', '-loop', '1', '-i', str(image), '-i', str(wav),
          '-vf', vf, '-r', str(fps), '-t', f'{scene_duration:.3f}', '-shortest',
          '-c:v', 'libx264', '-pix_fmt', 'yuv420p', '-c:a', 'aac', '-b:a', '192k',
          str(mp4)], silent=True)
@@ -579,7 +588,7 @@ def main():
         mp4 = scene_dir / '000.mp4'
         make_silent_audio(wav, card_duration)
         make_scene_srt([], srt)
-        run(['ffmpeg', '-y', '-loop', '1', '-i', str(title_card_path), '-i', str(wav),
+        run([FFMPEG, '-y', '-loop', '1', '-i', str(title_card_path), '-i', str(wav),
              '-vf', f'scale={width}:{height}:force_original_aspect_ratio=decrease,pad={width}:{height}:(ow-iw)/2:(oh-ih)/2:color=black',
              '-r', str(fps), '-t', f'{card_duration:.1f}', '-shortest',
              '-c:v', 'libx264', '-pix_fmt', 'yuv420p', '-c:a', 'aac', '-b:a', '192k',
@@ -679,7 +688,7 @@ def main():
             ec_mp4 = scene_dir / f'{ec_idx:03d}_end.mp4'
             make_silent_audio(ec_wav, end_card_duration)
             make_scene_srt([], ec_srt)
-            run(['ffmpeg', '-y', '-loop', '1', '-i', str(end_card_path), '-i', str(ec_wav),
+            run([FFMPEG, '-y', '-loop', '1', '-i', str(end_card_path), '-i', str(ec_wav),
                  '-vf', f'scale={width}:{height}:force_original_aspect_ratio=decrease,pad={width}:{height}:(ow-iw)/2:(oh-ih)/2:color=black',
                  '-r', str(fps), '-t', f'{end_card_duration:.1f}', '-shortest',
                  '-c:v', 'libx264', '-pix_fmt', 'yuv420p', '-c:a', 'aac', '-b:a', '192k',
@@ -703,7 +712,7 @@ def main():
     concat_txt.write_text('\n'.join(lines), encoding='utf-8')
 
     final_mp4 = out_dir / f'{manifest_path.stem}.mp4'
-    run(['ffmpeg', '-y', '-f', 'concat', '-safe', '0', '-i', str(concat_txt),
+    run([FFMPEG, '-y', '-f', 'concat', '-safe', '0', '-i', str(concat_txt),
          '-c', 'copy', str(final_mp4)], silent=True)
     print('OK')
 
@@ -712,12 +721,12 @@ def main():
         print('Mix BGM ... ', end='', flush=True)
         update_progress('混入 BGM...')
         voice_total = audio_dir / '_narration_full.wav'
-        run(['ffmpeg', '-y', '-i', str(final_mp4), '-vn', '-ar', '24000', '-ac', '1',
+        run([FFMPEG, '-y', '-i', str(final_mp4), '-vn', '-ar', '24000', '-ac', '1',
              str(voice_total)], silent=True)
         mixed_audio = tmp_dir / 'mixed_audio.wav'
         mix_bgm(voice_total, Path(bgm_path).resolve(), mixed_audio, duck_ratio=bgm_volume)
         tmp_video = tmp_dir / 'video_no_audio.mp4'
-        run(['ffmpeg', '-y', '-i', str(final_mp4), '-i', str(mixed_audio),
+        run([FFMPEG, '-y', '-i', str(final_mp4), '-i', str(mixed_audio),
              '-c:v', 'copy', '-c:a', 'aac', '-b:a', '192k', '-map', '0:v:0', '-map', '1:a:0',
              '-shortest', str(tmp_video)], silent=True)
         shutil.move(str(tmp_video), str(final_mp4))

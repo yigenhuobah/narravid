@@ -5,7 +5,7 @@ narravid Web UI v6 — 图片上传、缩略图预览、BGM 管理、在线预�
   python webui.py
   python webui.py --port 8080
 """
-import argparse, base64, json, os, re, shutil, subprocess, sys, threading, time, uuid
+import argparse, base64, json, os, re, shutil, sys, threading, time, uuid
 from pathlib import Path
 from http.server import HTTPServer, SimpleHTTPRequestHandler
 import urllib.parse
@@ -641,7 +641,7 @@ class H(SimpleHTTPRequestHandler):
             j = JOBS.get(rid)
             if not j:
                 self._json({'error': 'not found'}, 404); return
-            done = not (j['proc'] and j['proc'].poll() is None)
+            done = j.get('done', False)
             progress = j.get('progress', '')
             pf = j.get('progress_file')
             if pf and Path(pf).exists():
@@ -650,10 +650,12 @@ class H(SimpleHTTPRequestHandler):
                 except Exception:
                     pass
             resp = {'done': done, 'progress': progress, 'video': j.get('video'), 'srt': j.get('srt')}
-            if done and j['proc']:
-                if j['proc'].returncode == 0:
+            if done:
+                if j.get('error'):
+                    resp['error'] = j['error'][-300:]
+                else:
                     video = j.get('video', '')
-                    # 回退：如果 mon() 还没设置 video，直接扫目录
+                    # 回退：如果还没设置 video，直接扫目录
                     if not video:
                         out_dir = j.get('out')
                         if out_dir:
@@ -663,18 +665,6 @@ class H(SimpleHTTPRequestHandler):
                                 j['video'] = video
                     resp['video'] = video
                     j['progress'] = j.get('progress') or '完成'
-                else:
-                    err = j.get('error', '')
-                    if not err:
-                        out_dir = j.get('out')
-                        if out_dir:
-                            sf = Path(out_dir) / '_stderr.log'
-                            if sf.exists():
-                                try: err = sf.read_text(encoding='utf-8', errors='ignore')[-500:]
-                                except Exception: pass
-                        j['error'] = err
-                    code = j['proc'].returncode
-                    resp['error'] = f'渲染失败 (code {code}): {err[-300:]}' if err else f'渲染失败 (code {code})'
             self._json(resp)
         elif p.path == '/api/bgm-list':
             bgms = []
@@ -741,7 +731,8 @@ class H(SimpleHTTPRequestHandler):
             out = OUT_BASE / rid; out.mkdir(parents=True, exist_ok=True)
             mp = out / 'manifest.json'
             mp.write_text(json.dumps(m, ensure_ascii=False, indent=2), encoding='utf-8')
-            cmd = [sys.executable, str(SCRIPT), str(mp), '--output-dir', str(out)]
+            # 构建命令行参数列表（统一方式，兼容源码和 exe 模式）
+            cmd = [str(SCRIPT), str(mp), '--output-dir', str(out)]
             if bgm:
                 bgm_path = Path(bgm)
                 if not bgm_path.is_absolute():
@@ -789,75 +780,98 @@ class H(SimpleHTTPRequestHandler):
             progress_file.write_text('初始化...', encoding='utf-8')
             env = os.environ.copy()
             env['NARRAVID_PROGRESS_FILE'] = str(progress_file)
-            stderr_file = out / '_stderr.log'
-            stderr_fh = open(str(stderr_file), 'w', encoding='utf-8', errors='ignore')
-            proc = subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=stderr_fh, cwd=str(ROOT), env=env)
-            JOBS[rid] = {'proc': proc, 'progress': 'TTS 生成中...', 'video': '', 'srt': '',
-                         'progress_file': str(progress_file), 'out': out}
 
-            def mon():
+            # 在子线程中直接调用 video_auto.main()，不再用 subprocess
+            # 这样 exe 模式下无需依赖 sys.executable 指向 python 解释器
+            import video_auto as _va
+
+            cancel_event = threading.Event()
+            JOBS[rid] = {'proc': None, 'progress': 'TTS 生成中...', 'video': '', 'srt': '',
+                         'progress_file': str(progress_file), 'out': out,
+                         'cancel_event': cancel_event, 'done': False, 'error': ''}
+
+            # 保存原始 argv 和 cwd，线程结束后恢复
+            orig_argv = sys.argv
+            orig_cwd = os.getcwd()
+            orig_env = os.environ.copy()
+
+            def run_in_thread():
                 j = JOBS.get(rid)
                 if not j:
-                    try: stderr_fh.close()
-                    except Exception: pass
+                    return
+                try:
+                    # 设置环境
+                    os.environ.update(env)
+                    os.chdir(str(ROOT))
+                    sys.argv = cmd
+                    _va.main()
+                    # 成功完成
+                    mp4s = sorted(out.glob('*.mp4'))
+                    if mp4s:
+                        j['video'] = '/' + str(mp4s[0].relative_to(ROOT)).replace('\\', '/')
+                    j['progress'] = '完成'
+                except Exception as e:
+                    import traceback
+                    tb = traceback.format_exc()
+                    err_file = out / '_stderr.log'
+                    err_file.write_text(tb, encoding='utf-8', errors='ignore')
+                    j['error'] = str(e)[-500:]
+                    j['progress'] = f'失败: {e}'[:200]
+                finally:
+                    # 恢复原始状态
+                    sys.argv = orig_argv
+                    os.chdir(orig_cwd)
+                    os.environ.clear()
+                    os.environ.update(orig_env)
+                    j['done'] = True
+
+            def mon():
+                """监控线程：检查进度 + 超时检测"""
+                j = JOBS.get(rid)
+                if not j:
                     return
                 last_progress = ''
                 stall_count = 0
-                try:
-                    while True:
-                        rc = proc.poll()
-                        if rc is not None:
-                            break
-                        # 每 10 秒检查一次进度
-                        time.sleep(10)
-                        current_progress = ''
-                        pf = j.get('progress_file')
-                        if pf and Path(pf).exists():
-                            try:
-                                current_progress = Path(pf).read_text(encoding='utf-8').strip()
-                            except Exception:
-                                pass
-                        if current_progress == last_progress:
-                            stall_count += 1
-                        else:
-                            stall_count = 0
-                            last_progress = current_progress
-                        # 连续 6 次（60 秒）无进度更新则判定卡死
-                        if stall_count >= 6:
-                            proc.kill()
-                            j['progress'] = '超时（渲染卡死）'
-                            j['error'] = '渲染超时：60 秒无进度更新'
-                            return
-                    # 进程结束
-                    if proc.returncode == 0:
-                        mp4s = sorted(out.glob('*.mp4'))
-                        if mp4s:
-                            j['video'] = '/' + str(mp4s[0].relative_to(ROOT)).replace('\\', '/')
-                        j['progress'] = '完成'
+                while not j.get('done'):
+                    time.sleep(2)
+                    if j.get('done'):
+                        break
+                    current_progress = ''
+                    pf = j.get('progress_file')
+                    if pf and Path(pf).exists():
+                        try:
+                            current_progress = Path(pf).read_text(encoding='utf-8').strip()
+                        except Exception:
+                            pass
+                    if current_progress == last_progress:
+                        stall_count += 1
                     else:
-                        err = ''
-                        sf = out / '_stderr.log'
-                        if sf.exists():
-                            try: err = sf.read_text(encoding='utf-8', errors='ignore')[-500:]
-                            except Exception: pass
-                        j['error'] = err
-                        j['progress'] = f'失败 (code {proc.returncode})'
-                except Exception:
-                    try: proc.kill()
-                    except Exception: pass
-                    j['progress'] = '异常终止'
-                finally:
-                    try: stderr_fh.close()
-                    except Exception: pass
+                        stall_count = 0
+                        last_progress = current_progress
+                    # 连续 30 次（60 秒）无进度更新则判定卡死
+                    if stall_count >= 30:
+                        j['error'] = '渲染超时：60 秒无进度更新'
+                        j['progress'] = '超时（渲染卡死）'
+                        j['done'] = True
+                        return
+                    if j.get('cancel_event') and j['cancel_event'].is_set():
+                        j['progress'] = '已取消'
+                        j['done'] = True
+                        return
 
+            # 启动渲染线程和监控线程
+            threading.Thread(target=run_in_thread, daemon=True).start()
             threading.Thread(target=mon, daemon=True).start()
             self._json({'render_id': rid})
 
         elif p.path.startswith('/api/cancel'):
             rid = p.path.split('/')[-1]
             j = JOBS.get(rid)
-            if j and j['proc']:
-                j['proc'].kill()
+            if j:
+                j['done'] = True
+                if j.get('cancel_event'):
+                    j['cancel_event'].set()
+                j['progress'] = '已取消'
             self._json({'status': 'ok'})
 
         elif p.path == '/api/clean':

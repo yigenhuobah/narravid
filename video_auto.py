@@ -91,33 +91,37 @@ def split_sentences(text: str, smart_comma: bool = True):
             cur = ''
     if cur.strip():
         chunks.append(cur.strip())
-    # 如果只有一整句（无句末标点结尾），尝试按逗号智能断句
-    if smart_comma and len(chunks) <= 1:
-        raw = chunks[0] if chunks else text
-        # 按逗号/顿号拆分
-        comma_parts = []
-        buf = ''
-        for ch in raw:
-            buf += ch
-            if ch in '，、,':
-                if buf.strip():
-                    comma_parts.append(buf.strip())
-                buf = ''
-        if buf.strip():
-            comma_parts.append(buf.strip())
-        if len(comma_parts) > 1:
-            # 合并短句：相邻短句总长度 < 15 字就合并
-            merged = []
-            i = 0
-            while i < len(comma_parts):
-                group = comma_parts[i]
-                j = i + 1
-                while j < len(comma_parts) and len(group.replace('，','').replace('、','').replace(',','')) + len(comma_parts[j].replace('，','').replace('、','').replace(',','')) < 15:
-                    group += comma_parts[j]
-                    j += 1
-                merged.append(group)
-                i = j
-            return merged
+    # 对每个 chunk 检查是否需要逗号智能断句
+    if smart_comma:
+        result = []
+        for chunk in chunks:
+            # 按逗号/顿号拆分
+            comma_parts = []
+            buf = ''
+            for ch in chunk:
+                buf += ch
+                if ch in '，、,':
+                    if buf.strip():
+                        comma_parts.append(buf.strip())
+                    buf = ''
+            if buf.strip():
+                comma_parts.append(buf.strip())
+            if len(comma_parts) > 1:
+                # 合并短句：相邻短句总长度 < 15 字就合并
+                merged = []
+                i = 0
+                while i < len(comma_parts):
+                    group = comma_parts[i]
+                    j = i + 1
+                    while j < len(comma_parts) and len(group.replace('，','').replace('、','').replace(',','')) + len(comma_parts[j].replace('，','').replace('、','').replace(',','')) < 15:
+                        group += comma_parts[j]
+                        j += 1
+                    merged.append(group)
+                    i = j
+                result.extend(merged)
+            else:
+                result.append(chunk)
+        return result
     return chunks or [text]
 
 
@@ -269,7 +273,6 @@ def synthesize_audio_with_retry(text: str, raw_audio_path: Path, engine: str, vo
         return 'system'
     else:
         raise ValueError(f'不支持的 tts_engine: {engine}')
-    return engine
 
 
 # ── audio processing ────────────────────────────────────────────

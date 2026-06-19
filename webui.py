@@ -395,7 +395,6 @@ const SUB_DEFAULT={font:'Microsoft YaHei',size:16,color:'FFFFFF',outlineColor:'0
 let subStyle={...SUB_DEFAULT};
 
 function hexToASS(h){return '&H00'+h}
-function assColorToHex(ass){let m=ass.match(/&H00([0-9A-Fa-f]{6})/);return m?m[1].toUpperCase():'FFFFFF'}
 
 function buildSubStyleStr(){
   let s='FontName='+subStyle.font+',FontSize='+subStyle.size+
@@ -403,7 +402,7 @@ function buildSubStyleStr(){
     ',OutlineColour=&H64'+subStyle.outlineColor+
     ',BorderStyle=3,Outline='+subStyle.outline+',Shadow=0'+
     ',MarginV='+subStyle.margin+',Alignment='+subStyle.align;
-  if(subStyle.bold)s=s.replace('FontName=','FontName=')+',Bold=1';
+  if(subStyle.bold)s+=',Bold=1';
   return s
 }
 
@@ -737,12 +736,19 @@ async function showTemplates(){
       '<div class="tpl-meta">'+t.count+' 场景 · '+t.date+'</div>'+
       '</div>'+
       '<div class="tpl-actions">'+
-      '<div class="tpl-btn" title="重命名" onclick="event.stopPropagation();renameTemplate(\''+t.id+'\',\''+esc(t.name)+'\')">✎</div>'+
-      '<div class="tpl-btn del" title="删除" onclick="event.stopPropagation();delTemplate(\''+t.id+'\')">✕</div>'+
+      '<div class="tpl-btn" title="重命名" data-id="'+t.id+'" data-name="'+esc(t.name).replace(/'/g,'&#39;')+'">✎</div>'+
+      '<div class="tpl-btn del" title="删除" data-del="'+t.id+'">✕</div>'+
       '</div></div>'
   })}
   h+='<div class="tpl-save-row"><input id="tplName" placeholder="模板名称" style="padding:8px 10px;border:1px solid var(--border2);border-radius:8px;background:var(--surface2);color:var(--ink);font-size:13px;outline:none"><button class="btn primary sm" onclick="saveTemplate()">保存当前</button></div>';
   dlg.innerHTML=h;overlay.appendChild(dlg);document.body.appendChild(overlay);
+  // 事件委托：重命名和删除按钮
+  dlg.querySelectorAll('.tpl-btn[title="重命名"]').forEach(btn=>{
+    btn.onclick=function(ev){ev.stopPropagation();renameTemplate(this.dataset.id,this.dataset.name)};
+  });
+  dlg.querySelectorAll('.tpl-btn[title="删除"]').forEach(btn=>{
+    btn.onclick=function(ev){ev.stopPropagation();delTemplate(this.dataset.del)};
+  });
 }
 async function saveTemplate(){
   let name=E('tplName')?.value?.trim()||('模板 '+(new Date().toLocaleString('zh-CN',{month:'numeric',day:'numeric',hour:'2-digit',minute:'2-digit'})));
@@ -794,6 +800,7 @@ async function renameTemplate(id,oldName){
   };
   el.onblur=finish;
   el.onkeydown=e=>{if(e.key==='Enter'){e.preventDefault();el.blur()}if(e.key==='Escape'){el.textContent=oldName;el.blur()}};
+  el.onpaste=e=>{e.preventDefault();const txt=(e.clipboardData||window.clipboardData).getData('text');document.execCommand('insertText',false,txt)};
 }
 
 /* ── 清理旧文件 ── */
@@ -833,14 +840,18 @@ class H(SimpleHTTPRequestHandler):
             img = qs.get('path', [None])[0]
             if img:
                 fp = Path(img).resolve()
-                allowed = any(str(fp).startswith(str(d)) for d in THUMB_ALLOWED_DIRS)
+                # 安全路径检查：必须严格在允许目录内（用 relative_to 防止前缀绕过）
+                allowed = False
+                for d in THUMB_ALLOWED_DIRS:
+                    try:
+                        fp.relative_to(d)
+                        allowed = True
+                        break
+                    except ValueError:
+                        pass
                 if not allowed:
                     self._json({'error': 'forbidden'}, 403); return
-                if not fp.is_absolute():
-                    for base in [Path.cwd(), ROOT]:
-                        cand = base / fp
-                        if cand.exists(): fp = cand; break
-                if fp.exists():
+                if fp.exists() and fp.is_file():
                     self._file(fp, 'image/png' if fp.suffix == '.png' else 'image/jpeg')
                     return
             self._json({'error': 'not found'}, 404)
@@ -1006,7 +1017,8 @@ class H(SimpleHTTPRequestHandler):
             # 保存原始 argv 和 cwd，线程结束后恢复
             orig_argv = sys.argv
             orig_cwd = os.getcwd()
-            orig_env = os.environ.copy()
+            # 环境变量：只设 progress_file，不改全局 os.environ
+            progress_env_val = str(progress_file)
 
             def run_in_thread():
                 j = JOBS.get(rid)
@@ -1016,10 +1028,10 @@ class H(SimpleHTTPRequestHandler):
                     if j.get('done'):
                         return  # 已被取消
                     try:
-                        # 设置环境
-                        os.environ.update(env)
                         os.chdir(str(ROOT))
                         sys.argv = cmd
+                        # 只设 progress_file 环境变量，不污染全局
+                        os.environ['NARRAVID_PROGRESS_FILE'] = progress_env_val
                         _va.main()
                         # 成功完成
                         mp4s = sorted(out.glob('*.mp4'))
@@ -1037,8 +1049,9 @@ class H(SimpleHTTPRequestHandler):
                         # 恢复原始状态
                         sys.argv = orig_argv
                         os.chdir(orig_cwd)
-                        os.environ.clear()
-                        os.environ.update(orig_env)
+                        # 恢复 progress_file 环境变量
+                        if 'NARRAVID_PROGRESS_FILE' in os.environ:
+                            del os.environ['NARRAVID_PROGRESS_FILE']
                         j['done'] = True
 
             def mon():
@@ -1069,6 +1082,14 @@ class H(SimpleHTTPRequestHandler):
                         j['error'] = '渲染超时：60 秒无进度更新'
                         j['progress'] = '超时（渲染卡死）'
                         j['done'] = True
+                        # 通知渲染线程中断
+                        try:
+                            import video_auto as _va
+                            _va.CancelToken.set_cancelled()
+                        except Exception:
+                            pass
+                        if j.get('cancel_event'):
+                            j['cancel_event'].set()
                         return
                     if j.get('cancel_event') and j['cancel_event'].is_set():
                         j['progress'] = '已取消'
@@ -1078,31 +1099,31 @@ class H(SimpleHTTPRequestHandler):
             # 启动渲染线程和监控线程
             threading.Thread(target=run_in_thread, daemon=True).start()
             threading.Thread(target=mon, daemon=True).start()
+            # 延迟清理 JOBS（5 分钟后），避免内存泄漏
+            def cleanup_job():
+                time.sleep(300)
+                JOBS.pop(rid, None)
+            threading.Thread(target=cleanup_job, daemon=True).start()
             self._json({'render_id': rid})
 
         elif p.path.startswith('/api/cancel'):
             rid = p.path.split('/')[-1]
             j = JOBS.get(rid)
             if j:
-                j['done'] = True
+                # 先设置取消信号，再标记 done，避免 mon() 提前退出错过取消
                 if j.get('cancel_event'):
                     j['cancel_event'].set()
-                j['progress'] = '已取消'
-                # 设置全局取消令牌，让 video_auto 内部检测并中断
                 try:
                     import video_auto as _va
                     _va.CancelToken.set_cancelled()
                 except Exception:
                     pass
+                j['progress'] = '已取消'
+                j['done'] = True
             self._json({'status': 'ok'})
 
         elif p.path == '/api/clean':
             cleaned = 0
-            kept = 0
-            for d in OUT_BASE.iterdir():
-                if d.is_dir() and d.name not in ('uploads', 'templates'):
-                    # 保留最近 5 次渲染
-                    kept += 1
             # 按修改时间排序，保留最近 5 次
             dirs = sorted(
                 [d for d in OUT_BASE.iterdir() if d.is_dir() and d.name not in ('uploads', 'templates')],

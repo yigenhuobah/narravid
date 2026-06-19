@@ -23,32 +23,32 @@ jobs:
       - name: Install Python deps
         run: |
           python -m pip install --upgrade pip
-          pip install pyinstaller edge-tts matplotlib
+          pip install pyinstaller edge-tts matplotlib aiohttp
 
       - name: Install ffmpeg
         run: choco install ffmpeg --no-progress -y
 
       - name: Build CLI exe
-        run: |
-          pyinstaller --onefile --name narravid --console ^
-            --add-binary "C:\ProgramData\chocolatey\lib\ffmpeg\tools\ffmpeg\bin\ffmpeg.exe;ffmpeg" ^
-            --add-binary "C:\ProgramData\chocolatey\lib\ffmpeg\tools\ffmpeg\bin\ffprobe.exe;ffmpeg" ^
-            --hidden-import edge_tts ^
-            --hidden-import _bundled_ffmpeg ^
-            --collect-all edge_tts ^
-            video_auto.py
+        run: >
+          pyinstaller --onefile --name narravid --console
+          --add-binary "C:\ProgramData\chocolatey\lib\ffmpeg\tools\ffmpeg\bin\ffmpeg.exe;ffmpeg"
+          --add-binary "C:\ProgramData\chocolatey\lib\ffmpeg\tools\ffmpeg\bin\ffprobe.exe;ffmpeg"
+          --hidden-import edge_tts
+          --hidden-import _bundled_ffmpeg
+          --collect-all edge_tts
+          video_auto.py
 
       - name: Build WebUI exe
-        run: |
-          pyinstaller --onefile --name narravid-webui --console ^
-            --add-binary "C:\ProgramData\chocolatey\lib\ffmpeg\tools\ffmpeg\bin\ffmpeg.exe;ffmpeg" ^
-            --add-binary "C:\ProgramData\chocolatey\lib\ffmpeg\tools\ffmpeg\bin\ffprobe.exe;ffmpeg" ^
-            --hidden-import edge_tts ^
-            --hidden-import _bundled_ffmpeg ^
-            --hidden-import video_auto ^
-            --collect-all edge_tts ^
-            --collect-all matplotlib ^
-            webui.py
+        run: >
+          pyinstaller --onefile --name narravid-webui --console
+          --add-binary "C:\ProgramData\chocolatey\lib\ffmpeg\tools\ffmpeg\bin\ffmpeg.exe;ffmpeg"
+          --add-binary "C:\ProgramData\chocolatey\lib\ffmpeg\tools\ffmpeg\bin\ffprobe.exe;ffmpeg"
+          --hidden-import edge_tts
+          --hidden-import _bundled_ffmpeg
+          --hidden-import video_auto
+          --collect-all edge_tts
+          --collect-all matplotlib
+          webui.py
 
       - name: Create Release
         uses: softprops/action-gh-release@v2

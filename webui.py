@@ -896,7 +896,12 @@ class H(SimpleHTTPRequestHandler):
         elif p.path.startswith('/api/templates'):
             self._handle_templates_get(p)
         elif p.path.startswith('/rendered/'):
-            fp = ROOT / p.path.lstrip('/')
+            fp = (ROOT / p.path.lstrip('/')).resolve()
+            # 安全路径检查：必须严格在 ROOT 内（防目录穿越）
+            try:
+                fp.relative_to(ROOT.resolve())
+            except ValueError:
+                self._json({'error': 'forbidden'}, 403); return
             if fp.exists():
                 self._file(fp, 'video/mp4' if fp.suffix == '.mp4' else 'text/plain')
             else:
@@ -1006,9 +1011,6 @@ class H(SimpleHTTPRequestHandler):
 
             # 在子线程中直接调用 video_auto.main()，不再用 subprocess
             # 这样 exe 模式下无需依赖 sys.executable 指向 python 解释器
-            import video_auto as _va
-            _va.CancelToken.reset()  # 重置取消令牌
-
             cancel_event = threading.Event()
             JOBS[rid] = {'proc': None, 'progress': 'TTS 生成中...', 'video': '', 'srt': '',
                          'progress_file': str(progress_file), 'out': out,
@@ -1027,6 +1029,9 @@ class H(SimpleHTTPRequestHandler):
                 with RENDER_LOCK:
                     if j.get('done'):
                         return  # 已被取消
+                    # 在获取锁之后才重置取消令牌，避免排队期间被前一个任务的取消污染
+                    import video_auto as _va
+                    _va.CancelToken.reset()
                     try:
                         os.chdir(str(ROOT))
                         sys.argv = cmd
@@ -1102,6 +1107,11 @@ class H(SimpleHTTPRequestHandler):
             # 延迟清理 JOBS（5 分钟后），避免内存泄漏
             def cleanup_job():
                 time.sleep(300)
+                j = JOBS.get(rid)
+                if j and not j.get('done'):
+                    # 任务仍在运行，推迟清理
+                    threading.Thread(target=cleanup_job, daemon=True).start()
+                    return
                 JOBS.pop(rid, None)
             threading.Thread(target=cleanup_job, daemon=True).start()
             self._json({'render_id': rid})

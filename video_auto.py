@@ -55,7 +55,7 @@ def run(cmd, silent=False):
     if silent:
         kwargs['stdout'] = subprocess.DEVNULL
         kwargs['stderr'] = subprocess.DEVNULL
-    subprocess.run(cmd, check=True, **kwargs)
+    subprocess.run(cmd, check=True, timeout=600, **kwargs)
 
 
 def ffprobe_duration(path: Path) -> float:
@@ -265,6 +265,7 @@ def synthesize_audio_with_retry(text: str, raw_audio_path: Path, engine: str, vo
                         synthesize_system_tts(text, raw_audio_path.with_suffix('.raw.wav'), voice=DEFAULT_SYSTEM_VOICE, rate=rate, volume=volume)
                         run([FFMPEG, '-y', '-i', str(raw_audio_path.with_suffix('.raw.wav')),
                              '-ar', '24000', '-ac', '1', str(raw_audio_path)], silent=True)
+                        print(f'  [warn] Edge TTS 失败，已降级为系统 TTS（音色可能变化）')
                         return 'system'
                     except Exception as fallback_err:
                         raise RuntimeError(f'edge-tts 和 system TTS 均失败: {fallback_err}') from fallback_err
@@ -288,10 +289,11 @@ def process_audio(raw_audio_path: Path, out_path: Path, speed: float, pad_sec: f
     if not filters:
         shutil.copyfile(raw_audio_path, out_path)
         return source_duration
+    # 不使用 -t 硬截断，改用 -avoid_negative_ts make_zero 确保时间戳正确
+    # atempo + apad 已自然产生目标时长，硬截断可能切掉尾音
     run([FFMPEG, '-y', '-i', str(raw_audio_path),
          '-af', ','.join(filters),
          '-ar', '24000', '-ac', '1',
-         '-t', f'{target_duration:.3f}',
          str(out_path)], silent=True)
     return ffprobe_duration(out_path)
 
@@ -565,21 +567,34 @@ def main():
 
     manifest = load_manifest(manifest_path)
     title = manifest.get('title', manifest_path.stem)
-    width = int(manifest.get('width', DEFAULT_W))
-    height = int(manifest.get('height', DEFAULT_H))
-    fps = int(manifest.get('fps', DEFAULT_FPS))
+    def _safe_int(val, default, name):
+        try:
+            return int(val)
+        except (ValueError, TypeError):
+            print(f'  [warn] manifest 字段 {name} 值无效 ({val!r})，使用默认值 {default}')
+            return default
+    def _safe_float(val, default, name):
+        try:
+            return float(val)
+        except (ValueError, TypeError):
+            print(f'  [warn] manifest 字段 {name} 值无效 ({val!r})，使用默认值 {default}')
+            return default
+
+    width = _safe_int(manifest.get('width', DEFAULT_W), DEFAULT_W, 'width')
+    height = _safe_int(manifest.get('height', DEFAULT_H), DEFAULT_H, 'height')
+    fps = _safe_int(manifest.get('fps', DEFAULT_FPS), DEFAULT_FPS, 'fps')
     tts_engine = args.engine or manifest.get('tts_engine') or ('edge' if edge_tts_available() else 'system')
     voice = args.voice or manifest.get('voice') or (DEFAULT_EDGE_VOICE if tts_engine == 'edge' else DEFAULT_SYSTEM_VOICE)
-    rate = int(manifest.get('rate', 0))
-    volume = int(manifest.get('volume', 100))
-    speech_speed = args.speed or float(manifest.get('speech_speed', DEFAULT_SPEECH_SPEED))
+    rate = _safe_int(manifest.get('rate', 0), 0, 'rate')
+    volume = _safe_int(manifest.get('volume', 100), 100, 'volume')
+    speech_speed = args.speed or _safe_float(manifest.get('speech_speed', DEFAULT_SPEECH_SPEED), DEFAULT_SPEECH_SPEED, 'speech_speed')
     if speech_speed < 0.5:
         print(f'  [warn] 语速 {speech_speed} 过低，已调整为 0.5')
         speech_speed = 0.5
     elif speech_speed > 3.0:
         print(f'  [warn] 语速 {speech_speed} 过高，已调整为 3.0')
         speech_speed = 3.0
-    pad_sec = float(manifest.get('scene_tail_silence_sec', 0.16))
+    pad_sec = _safe_float(manifest.get('scene_tail_silence_sec', 0.16), 0.16, 'scene_tail_silence_sec')
     burn_subtitles = not args.no_burn and bool(manifest.get('burn_subtitles', True))
     bgm_path = args.bgm
     bgm_volume = max(0.0, min(1.0, args.bgm_volume))
@@ -604,7 +619,7 @@ def main():
     subtitle_style = args.subtitle_style
     card_bg = args.title_card_bg or '#1a1a2e'
     smart_comma = not args.no_smart_comma
-    workers = args.workers or int(manifest.get('workers', DEFAULT_WORKERS))
+    workers = args.workers or _safe_int(manifest.get('workers', DEFAULT_WORKERS), DEFAULT_WORKERS, 'workers')
     # 至少 1 个 worker
     workers = max(1, workers)
 

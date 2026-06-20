@@ -387,19 +387,40 @@ def generate_title_card(title: str, out_path: Path, width: int, height: int, bg_
 # ── BGM mixing ───────────────────────────────────────────────────
 
 def mix_bgm(voice_audio: Path, bgm_path: Path, out_path: Path, duck_ratio: float = 0.25):
-    """将 BGM 与配音混音，配音时 BGM 音量降到 duck_ratio；失败则降级用原音频"""
+    """将 BGM 与配音混音，使用侧链压缩实现人声闪避效果。
+
+    duck_ratio 作为 BGM 压缩后的最低音量比例（如 0.25 = 压到 25%）。
+    人声出现时 BGM 被侧链压缩，人声停止时 BGM 平滑恢复。
+    失败则降级为固定音量 amix。
+    """
     dur = ffprobe_duration(voice_audio)
+    # threshold 根据 duck_ratio 反推：ratio 越小（压得越低），threshold 越灵敏
+    threshold = max(0.02, duck_ratio * 0.3)
+    # 压缩比：duck_ratio=0.25 → ratio≈4, duck_ratio=0.1 → ratio≈10
+    ratio = max(2.0, 1.0 / max(duck_ratio, 0.05))
     try:
         run([FFMPEG, '-y',
              '-i', str(voice_audio),
              '-stream_loop', '-1', '-i', str(bgm_path),
              '-filter_complex',
-             f'[1:a]volume={duck_ratio:.2f}[a1];[0:a][a1]amix=inputs=2:duration=first:dropout_transition=0.5',
+             # 侧链压缩：人声[0:a]作为sidechain控制BGM[1:a]的压缩
+             f'[1:a][0:a]sidechaincompress=threshold={threshold:.3f}:ratio={ratio:.1f}:attack=200:release=800:makeup={1.0/duck_ratio:.1f}[ducked];'
+             f'[0:a][ducked]amix=inputs=2:duration=first:dropout_transition=0.5',
              '-t', f'{dur:.3f}', '-ar', '24000', '-ac', '1',
              str(out_path)], silent=True)
     except Exception as e:
-        print(f'  BGM 混音失败({e})，使用原音频')
-        shutil.copy2(str(voice_audio), str(out_path))
+        print(f'  侧链压缩失败({e})，降级为固定音量混音')
+        try:
+            run([FFMPEG, '-y',
+                 '-i', str(voice_audio),
+                 '-stream_loop', '-1', '-i', str(bgm_path),
+                 '-filter_complex',
+                 f'[1:a]volume={duck_ratio:.2f}[a1];[0:a][a1]amix=inputs=2:duration=first:dropout_transition=0.5',
+                 '-t', f'{dur:.3f}', '-ar', '24000', '-ac', '1',
+                 str(out_path)], silent=True)
+        except Exception as e2:
+            print(f'  BGM 混音完全失败({e2})，使用原音频')
+            shutil.copy2(str(voice_audio), str(out_path))
 
 
 # ── 并行场景处理 ────────────────────────────────────────────────
@@ -476,7 +497,11 @@ def process_single_scene(idx: int, scene: dict, project_root: Path,
     if not image.is_absolute():
         image = (project_root / image).resolve()
     if not image.exists():
-        raise FileNotFoundError(f'scene {idx} 图片不存在: {image}')
+        raise FileNotFoundError(f'scene {idx} 媒体文件不存在: {image}')
+
+    # 判断是图片还是视频
+    VIDEO_EXTS = {'.mp4', '.mov', '.mkv', '.avi', '.webm', '.flv'}
+    is_video = image.suffix.lower() in VIDEO_EXTS
 
     hold_sec = float(scene.get('hold_sec', 0.0))
     raw_audio = tmp_dir / (f'{idx:03d}.raw.mp3' if tts_engine == 'edge' else f'{idx:03d}.raw.wav')
@@ -510,10 +535,22 @@ def process_single_scene(idx: int, scene: dict, project_root: Path,
 
     _check_cancel()
     progress.report(idx, 'Render ...')
-    run([FFMPEG, '-y', '-loop', '1', '-i', str(image), '-i', str(wav),
-         '-vf', vf, '-r', str(fps), '-t', f'{scene_duration:.3f}', '-shortest',
-         '-c:v', 'libx264', '-pix_fmt', 'yuv420p', '-c:a', 'aac', '-b:a', '192k',
-         str(mp4)], silent=True)
+    if is_video:
+        # 视频背景：丢弃视频原始音轨，用 TTS 音频
+        # -stream_loop -1 循环视频, -t 截断到目标时长, 不用 -an（需要 wav 音轨）
+        run([FFMPEG, '-y',
+             '-stream_loop', '-1', '-i', str(image),
+             '-i', str(wav),
+             '-map', '0:v:0', '-map', '1:a:0',  # 只取视频的视频流 + TTS 的音频流
+             '-vf', vf, '-r', str(fps), '-t', f'{scene_duration:.3f}',
+             '-c:v', 'libx264', '-pix_fmt', 'yuv420p', '-c:a', 'aac', '-b:a', '192k',
+             str(mp4)], silent=True)
+    else:
+        # 图片背景：传统模式
+        run([FFMPEG, '-y', '-loop', '1', '-i', str(image), '-i', str(wav),
+             '-vf', vf, '-r', str(fps), '-t', f'{scene_duration:.3f}', '-shortest',
+             '-c:v', 'libx264', '-pix_fmt', 'yuv420p', '-c:a', 'aac', '-b:a', '192k',
+             str(mp4)], silent=True)
     progress.complete(idx, 'Render OK')
 
     return {

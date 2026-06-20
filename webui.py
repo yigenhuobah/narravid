@@ -5,7 +5,7 @@ narravid Web UI v6 — 图片上传、缩略图预览、BGM 管理、在线预�
   python webui.py
   python webui.py --port 8080
 """
-import argparse, base64, json, os, re, shutil, sys, threading, time, uuid
+import argparse, base64, io, json, os, re, shutil, sys, threading, time, uuid
 from pathlib import Path
 from http.server import HTTPServer, SimpleHTTPRequestHandler
 import urllib.parse
@@ -29,7 +29,8 @@ for d in [OUT_BASE, UPLOAD_DIR, TEMPLATE_DIR]:
 THUMB_ALLOWED_DIRS = [UPLOAD_DIR.resolve(), (ROOT / 'examples-assets').resolve()]
 
 # ── 文件大小限制 ─────────────────────────────────────────────────
-MAX_IMAGE_SIZE = 20 * 1024 * 1024   # 20 MB
+MAX_IMAGE_SIZE = 20 * 1024 * 1024   # 20 MB (图片)
+MAX_VIDEO_SIZE = 60 * 1024 * 1024   # 60 MB (视频)
 MAX_BGM_SIZE = 50 * 1024 * 1024     # 50 MB
 MAX_UPLOAD_SIZE = 60 * 1024 * 1024  # 总 body 60MB
 
@@ -352,6 +353,8 @@ body{font-family:"Microsoft YaHei","PingFang SC","Noto Sans SC",sans-serif;backg
   <button class="btn" onclick="batch()">+ 添加图片</button>
   <button class="btn" onclick="add()">+ 空场景</button>
   <button class="btn" onclick="showTemplates()">📋 模板</button>
+  <button class="btn" onclick="exportProject()">📦 导出工程</button>
+  <button class="btn" onclick="importProject()">📥 导入工程</button>
   <button class="btn" onclick="cleanOld()">🗑 清理旧文件</button>
   <span class="upload-stats" id="ustats"></span>
 </div>
@@ -526,7 +529,8 @@ function fileToB64(f){return new Promise((ok,no)=>{let r=new FileReader();r.onlo
 
 /* ── 图片上传 ── */
 async function uploadFile(file){
-  if(file.size>MAX_IMG)throw '图片 '+file.name+' 超过 20MB 限制';
+  let maxSz=file.type.startsWith('video/')?60*1024*1024:MAX_IMG;
+  if(file.size>maxSz)throw (file.type.startsWith('video/')?'视频 ':'图片 ')+file.name+' 超过大小限制';
   return new Promise((resolve,reject)=>{
     let r=new FileReader();
     r.onload=async()=>{
@@ -546,11 +550,14 @@ async function uploadFile(file){
 }
 
 async function batch(){
-  let inp=document.createElement('input');inp.type='file';inp.multiple=true;inp.accept='image/*';
+  let inp=document.createElement('input');inp.type='file';inp.multiple=true;inp.accept='image/*,video/*';
   inp.onchange=async()=>{
     if(!inp.files.length)return;
-    let files=Array.from(inp.files).filter(f=>f.type.startsWith('image/')&&f.size<=MAX_IMG);
-    if(!files.length){toast('未选择有效图片（需 < 20MB）','warn');return}
+    let files=Array.from(inp.files).filter(f=>{
+      let maxSz=f.type.startsWith('video/')?60*1024*1024:MAX_IMG;
+      return (f.type.startsWith('image/')||f.type.startsWith('video/'))&&f.size<=maxSz;
+    });
+    if(!files.length){toast('未选择有效文件（图片<20MB，视频<60MB）','warn');return}
     uploading=files.length;updateStats();
     let next=0;
     for(let f of files){
@@ -569,7 +576,7 @@ async function batch(){
 }
 
 function handleDrop(files){
-  let imgs=Array.from(files).filter(f=>f.type.startsWith('image/'));
+  let imgs=Array.from(files).filter(f=>f.type.startsWith('image/')||f.type.startsWith('video/'));
   if(!imgs.length)return;
   let next=0;
   for(let f of imgs){
@@ -600,10 +607,15 @@ function chImg(i){
 }
 function updateStats(){E('ustats').textContent=uploading>0?uploading+' 张上传中...':'';}
 function thumbUrl(i){let img=S[i].image;if(!img)return'';return'/thumb?path='+encodeURIComponent(img);}
+function isVideo(path){return/\.(mp4|mov|mkv|avi|webm|flv)$/i.test(path||'')}
 function lightbox(i){
-  let u=thumbUrl(i);if(!u)return;
+  let img=S[i].image;if(!img)return;
   let d=document.createElement('div');d.className='lb';d.onclick=()=>d.remove();
-  let el=document.createElement('img');el.src=u;d.appendChild(el);
+  if(isVideo(img)){
+    let v=document.createElement('video');v.src=thumbUrl(i);v.controls=true;v.style.maxWidth='90vw';v.style.maxHeight='80vh';d.appendChild(v);
+  }else{
+    let el=document.createElement('img');el.src=thumbUrl(i);d.appendChild(el);
+  }
   document.body.appendChild(d);
 }
 
@@ -620,16 +632,27 @@ function dropS(i,e){e.preventDefault();dragLV();if(dragFrom===null||dragFrom===i
 
 function pain(){
   if(!S.length){
-    E('list').innerHTML='<div class="empty"><div class="icon">🎞</div><p>还没有场景</p><div class="hint">点击「添加图片」或将图片拖入此页面</div></div>';
+    E('list').innerHTML='<div class="empty"><div class="icon">🎞</div><p>还没有场景</p><div class="hint">点击「添加图片」上传图片或视频，或将文件拖入此页面</div></div>';
     return;
   }
   let h='';
   S.forEach((s,i)=>{
     let tu=thumbUrl(i);
     let hasImg=!!tu;
+    let vid=isVideo(s.image);
     let cls='thumb'+(hasImg?' has-img':'');
-    let inner=hasImg?'<img src="'+tu+'" alt="场景'+(i+1)+'" onerror="this.style.display=\'none\';this.parentNode.classList.remove(\'has-img\')">':'<div class="loader"></div>';
-    if(s._loading&&!hasImg)inner='<div class="loader"></div>';
+    let inner='';
+    if(hasImg){
+      if(vid){
+        inner='<video src="'+tu+'" muted preload="metadata" onerror="this.style.display=\'none\'"></video>';
+      }else{
+        inner='<img src="'+tu+'" alt="场景'+(i+1)+'" onerror="this.style.display=\'none\';this.parentNode.classList.remove(\'has-img\')">';
+      }
+    }else if(s._loading){
+      inner='<div class="loader"></div>';
+    }else{
+      inner='<div class="loader"></div>';
+    }
     let nm=s._name||(s.image?s.image.split('/').pop().split('\\').pop():'');
     let pathCls='path'+(s._error?' err':'');
     h+='<div class="scene" draggable="true" ondragstart="dragS('+i+',event)" ondragover="event.preventDefault();dragEnter('+i+')" ondragleave="dragLV()" ondrop="dropS('+i+',event)">'
@@ -639,7 +662,7 @@ function pain(){
       +'<div class="body">'
         +'<textarea placeholder="输入解说文案（按句自动切字幕，逗号长句智能断句）" oninput="S['+i+'].text=this.value">'+esc(s.text)+'</textarea>'
         +'<div class="foot">'
-          +'<span class="'+pathCls+'">'+esc(nm||(s._loading?'上传中...':(s._error?'上传失败':'未上传图片')))+'</span>'
+          +'<span class="'+pathCls+'">'+esc(nm||(s._loading?'上传中...':(s._error?'上传失败':'未上传文件')))+'</span>'
           +'<input class="hold-input" type="number" placeholder="停顿秒" value="'+(s.hold||'')+'" oninput="S['+i+'].hold=parseFloat(this.value)||0" title="场景末尾额外停留秒数">'
           +'<button class="btn-sm" onclick="chImg('+i+')">换图</button>'
           +'<button class="del" onclick="del('+i+')" title="删除场景">×</button>'
@@ -803,6 +826,70 @@ async function renameTemplate(id,oldName){
   el.onpaste=e=>{e.preventDefault();const txt=(e.clipboardData||window.clipboardData).getData('text');document.execCommand('insertText',false,txt)};
 }
 
+/* ── 导出/导入工程 ── */
+async function exportProject(){
+  document.querySelectorAll('.scene textarea').forEach((ta,i)=>{if(S[i])S[i].text=ta.value});
+  let valid=S.filter(s=>s.image);
+  if(!valid.length){toast('没有场景可导出','warn');return}
+  let res=(E('res').value||'1920x1080').split('x');
+  let m={title:'narravid',width:parseInt(res[0]),height:parseInt(res[1]),tts_engine:ttsEngine,workers:parseInt(E('wk').value),
+    voice:E('v').value,speech_speed:parseFloat(E('sp').value),burn_subtitles:E('bs').checked,
+    bgm_volume:parseFloat(E('bvol').value),card_duration:parseFloat(E('tcd').value),
+    subtitle_style:buildSubStyleStr(),
+    scenes:valid.map(s=>({image:s.image,text:s.text.trim(),hold_sec:s.hold||0}))};
+  let bgm=E('bgmSel').value||null;
+  toast('正在打包...','info');
+  try{
+    let resp=await fetch('/api/export',{method:'POST',headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({manifest:m,bgm:bgm})});
+    if(!resp.ok){let d=await resp.json().catch(()=>({}));toast(d.error||'导出失败','error');return}
+    let blob=await resp.blob();
+    let url=URL.createObjectURL(blob);
+    let a=document.createElement('a');a.href=url;a.download='narravid_project.zip';
+    document.body.appendChild(a);a.click();a.remove();
+    URL.revokeObjectURL(url);
+    toast('已导出工程','ok');
+  }catch(e){toast('导出失败: '+e,'error')}
+}
+
+async function importProject(){
+  let inp=document.createElement('input');inp.type='file';inp.accept='.zip';
+  inp.onchange=async()=>{
+    if(!inp.files.length)return;
+    let f=inp.files[0];
+    if(f.size>100*1024*1024){toast('文件过大（上限100MB）','warn');return}
+    let b64=await fileToB64(f);
+    toast('正在导入...','info');
+    try{
+      let resp=await fetch('/api/import',{method:'POST',headers:{'Content-Type':'application/json'},
+        body:JSON.stringify({data:b64})});
+      let d=await resp.json();
+      if(d.error){toast(d.error,'error');return}
+      // 加载 manifest 到 UI
+      let m=d.manifest;
+      S=m.scenes.map(s=>({image:s.image,text:s.text,hold:s.hold_sec||0}));
+      if(m.tts_engine)ttsEngine=m.tts_engine;
+      if(m.voice)E('v').value=m.voice;
+      if(m.speech_speed)E('sp').value=m.speech_speed;
+      if(m.workers)E('wk').value=m.workers;
+      if(m.burn_subtitles!==undefined)E('bs').checked=m.burn_subtitles;
+      if(m.bgm_volume!==undefined)E('bvol').value=m.bgm_volume;
+      if(m.card_duration!==undefined)E('tcd').value=m.card_duration;
+      if(m.width&&m.height){
+        let res=m.width+'x'+m.height;
+        for(let opt of E('res').options){if(opt.value===res)opt.selected=true}
+      }
+      // BGM
+      if(d.bgm){
+        await loadBGM();
+        for(let opt of E('bgmSel').options){if(opt.value===d.bgm||opt.value.endsWith(d.bgm.split(/[\\/]/).pop()))opt.selected=true}
+      }
+      pain();toast('已导入工程（'+S.length+' 个场景）','ok');
+    }catch(e){toast('导入失败: '+e,'error')}
+  };
+  inp.click();
+}
+
 /* ── 清理旧文件 ── */
 async function cleanOld(){
   let r=await fetch('/api/clean',{method:'POST'});let d=await r.json();
@@ -937,8 +1024,8 @@ class H(SimpleHTTPRequestHandler):
             # 大小校验
             if kind == 'bgm' and len(raw) > MAX_BGM_SIZE:
                 self._json({'error': f'BGM 文件超过 {MAX_BGM_SIZE // 1024 // 1024}MB 限制'}, 413); return
-            elif len(raw) > MAX_IMAGE_SIZE:
-                self._json({'error': f'图片超过 {MAX_IMAGE_SIZE // 1024 // 1024}MB 限制'}, 413); return
+            elif len(raw) > MAX_VIDEO_SIZE:
+                self._json({'error': f'文件超过 {MAX_VIDEO_SIZE // 1024 // 1024}MB 限制'}, 413); return
             # sanitize filename: replace non-ASCII chars to avoid path/encoding issues
             safe_name = re.sub(r'[^\x20-\x7e]', '_', name)
             fp = UPLOAD_DIR / f'{uuid.uuid4().hex}_{safe_name}'
@@ -1154,6 +1241,86 @@ class H(SimpleHTTPRequestHandler):
             data['count'] = len(data.get('scenes', []))
             tp.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding='utf-8')
             self._json({'id': tid})
+
+        elif p.path == '/api/export':
+            # 导出工程：manifest + 所有引用的图片/视频 + BGM 打包成 zip
+            import zipfile, tempfile
+            data = json.loads(body)
+            m = data.get('manifest', {})
+            bgm = data.get('bgm')
+            # 创建临时 zip
+            zip_buf = io.BytesIO()
+            zf = zipfile.ZipFile(zip_buf, 'w', zipfile.ZIP_DEFLATED)
+            # 收集需要打包的文件及其新路径
+            collected = {}  # abs_path -> zip_relative_path
+            manifest_copy = json.loads(json.dumps(m))  # deep copy
+            for i, scene in enumerate(manifest_copy.get('scenes', [])):
+                img = scene.get('image', '')
+                if not img:
+                    continue
+                img_path = Path(img)
+                if not img_path.is_absolute():
+                    img_path = UPLOAD_DIR / img_path
+                img_path = img_path.resolve()
+                if img_path.exists() and str(img_path) not in collected:
+                    ext = img_path.suffix.lower()
+                    zname = f'assets/scene_{i:03d}{ext}'
+                    collected[str(img_path)] = zname
+                if str(img_path) in collected:
+                    scene['image'] = collected[str(img_path)]
+            # BGM
+            if bgm:
+                bgm_path = Path(bgm)
+                if not bgm_path.is_absolute():
+                    bgm_path = UPLOAD_DIR / bgm_path
+                bgm_path = bgm_path.resolve()
+                if bgm_path.exists():
+                    zname = f'assets/bgm{bgm_path.suffix}'
+                    collected[str(bgm_path)] = zname
+                    manifest_copy['bgm'] = zname
+            # 写入 manifest
+            zf.writestr('manifest.json', json.dumps(manifest_copy, ensure_ascii=False, indent=2))
+            # 写入所有媒体文件
+            for abs_path, zname in collected.items():
+                zf.write(abs_path, zname)
+            zf.close()
+            zip_data = zip_buf.getvalue()
+            # 返回 base64
+            self.send_response(200)
+            self.send_header('Content-Type', 'application/zip')
+            self.send_header('Content-Disposition', f'attachment; filename="narravid_project.zip"')
+            self.send_header('Content-Length', str(len(zip_data)))
+            self.end_headers()
+            self.wfile.write(zip_data)
+
+        elif p.path == '/api/import':
+            # 导入工程：上传 zip，解压到 uploads 新目录，返回修正路径后的 manifest
+            import zipfile, tempfile
+            data = json.loads(body)
+            b64 = data.get('data', '')
+            try:
+                zip_bytes = base64.b64decode(b64)
+            except Exception:
+                self._json({'error': 'base64 解码失败'}, 400); return
+            project_id = uuid.uuid4().hex[:8]
+            project_dir = UPLOAD_DIR / f'project_{project_id}'
+            project_dir.mkdir(parents=True, exist_ok=True)
+            zip_buf = io.BytesIO(zip_bytes)
+            with zipfile.ZipFile(zip_buf, 'r') as zf:
+                zf.extractall(project_dir)
+            # 读取 manifest 并修正路径
+            mp = project_dir / 'manifest.json'
+            if not mp.exists():
+                self._json({'error': 'zip 中未找到 manifest.json'}, 400); return
+            manifest = json.loads(mp.read_text(encoding='utf-8'))
+            for scene in manifest.get('scenes', []):
+                img = scene.get('image', '')
+                if img and not Path(img).is_absolute():
+                    scene['image'] = str((project_dir / img).resolve())
+            bgm_val = manifest.pop('bgm', None)
+            if bgm_val and not Path(bgm_val).is_absolute():
+                bgm_val = str((project_dir / bgm_val).resolve())
+            self._json({'manifest': manifest, 'bgm': bgm_val})
 
         else:
             self._json({'error': 'not found'}, 404)

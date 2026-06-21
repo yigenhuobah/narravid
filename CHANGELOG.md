@@ -5,6 +5,12 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [v1.6.2] - 2026-06-21
+
+### Fixed
+
+- **edge_tts 7.2.7 兼容**：`rate` 和 `volume` 参数传 `None` 会抛 `TypeError: rate must be str`，改为默认 `'+0%'`
+
 ## [v1.6.0] - 2026-06-20
 
 ### Added

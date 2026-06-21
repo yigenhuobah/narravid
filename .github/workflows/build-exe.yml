@@ -50,6 +50,22 @@ jobs:
           --collect-all matplotlib
           webui.py
 
+      - name: Extract changelog for this version
+        id: changelog
+        shell: python
+        run: |
+          import re, sys
+          tag = "${{ github.ref_name }}"
+          with open("CHANGELOG.md", encoding="utf-8") as f:
+              content = f.read()
+          # Match ## [vX.Y.Z] section
+          pattern = rf'## \[{re.escape(tag)}\][^\n]*\n(.*?)(?=\n## \[|$)'
+          m = re.search(pattern, content, re.DOTALL)
+          body = m.group(1).strip() if m else "（CHANGELOG 中未找到此版本记录）"
+          # Write to GITHUB_ENV
+          with open("$GITHUB_ENV", "a", encoding="utf-8") as f:
+              f.write(f"RELEASE_BODY<<EOF\n{body}\nEOF\n")
+
       - name: Create Release
         uses: softprops/action-gh-release@v2
         with:
@@ -60,10 +76,9 @@ jobs:
           body: |
             ## narravid ${{ github.ref_name }}
 
-            ### 无需安装 ffmpeg，exe 已自带！
-
             - **narravid-webui.exe** — 双击打开浏览器使用（推荐）
             - **narravid.exe** — 命令行版本
 
-            ### 快速开始
-            双击 `narravid-webui.exe`，浏览器会自动打开。
+            ### 更新内容
+
+            ${{ env.RELEASE_BODY }}

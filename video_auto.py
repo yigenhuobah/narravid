@@ -238,8 +238,8 @@ def synthesize_edge_tts(text: str, media_path: Path, voice: str, rate: int = 0, 
     clean_text = text.replace('\ufffd', '').replace('�', '').strip()
     if not clean_text:
         raise RuntimeError('edge-tts: 文本为空')
-    rate_str = f'{int(rate):+d}%' if rate else None
-    volume_str = f'{int(volume) - 100:+d}%' if volume != 100 else None
+    rate_str = f'{int(rate):+d}%' if rate else '+0%'
+    volume_str = f'{int(volume) - 100:+d}%' if volume != 100 else '+0%'
     communicate = edge_tts.Communicate(
         text=clean_text,
         voice=voice,

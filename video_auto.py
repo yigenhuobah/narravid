@@ -86,11 +86,15 @@ def split_sentences(text: str, smart_comma: bool = True):
     for ch in text:
         cur += ch
         if ch in sentence_enders:
-            if cur.strip():
-                chunks.append(cur.strip())
+            # 只保留有非标点内容的 chunk
+            stripped = cur.strip()
+            if stripped and any(c not in sentence_enders and c not in '，、, ' for c in stripped):
+                chunks.append(stripped)
             cur = ''
     if cur.strip():
-        chunks.append(cur.strip())
+        stripped = cur.strip()
+        if any(c not in sentence_enders and c not in '，、, ' for c in stripped):
+            chunks.append(stripped)
     # 对每个 chunk 检查是否需要逗号智能断句
     if smart_comma:
         result = []
@@ -280,7 +284,6 @@ def synthesize_audio_with_retry(text: str, raw_audio_path: Path, engine: str, vo
 
 def process_audio(raw_audio_path: Path, out_path: Path, speed: float, pad_sec: float):
     source_duration = ffprobe_duration(raw_audio_path)
-    target_duration = source_duration / speed + pad_sec
     filters = []
     if abs(speed - 1.0) > 1e-6:
         filters.append(f'atempo={speed:.3f}')
@@ -404,8 +407,11 @@ def mix_bgm(voice_audio: Path, bgm_path: Path, out_path: Path, duck_ratio: float
              '-stream_loop', '-1', '-i', str(bgm_path),
              '-filter_complex',
              # 侧链压缩：人声[0:a]作为sidechain控制BGM[1:a]的压缩
-             f'[1:a][0:a]sidechaincompress=threshold={threshold:.3f}:ratio={ratio:.1f}:attack=200:release=800:makeup={1.0/duck_ratio:.1f}[ducked];'
-             f'[0:a][ducked]amix=inputs=2:duration=first:dropout_transition=0.5',
+             # makeup=1.0 不放大，静音时 BGM 保持原始音量；人声时压缩到 1/ratio
+             # 再用 volume 滤镜将 BGM 整体限制在 duck_ratio 水平，避免静音段爆音
+             f'[1:a][0:a]sidechaincompress=threshold={threshold:.3f}:ratio={ratio:.1f}:attack=200:release=800:makeup=1.0[ducked];'
+             f'[ducked]volume={duck_ratio:.2f}[bgm_low];'
+             f'[0:a][bgm_low]amix=inputs=2:duration=first:dropout_transition=0.5',
              '-t', f'{dur:.3f}', '-ar', '24000', '-ac', '1',
              str(out_path)], silent=True)
     except Exception as e:

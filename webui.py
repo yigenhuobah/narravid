@@ -595,7 +595,7 @@ function handleDrop(files){
 function add(img,txt,hold){S.push({image:img||'',text:txt||'',hold:hold||0});pain()}
 function del(i){S.splice(i,1);pain()}
 function chImg(i){
-  let inp=document.createElement('input');inp.type='file';inp.accept='image/*';
+  let inp=document.createElement('input');inp.type='file';inp.accept='image/*,video/*';
   inp.onchange=async()=>{
     if(!inp.files[0])return;
     S[i]._loading=true;uploading++;updateStats();pain();
@@ -881,7 +881,7 @@ async function importProject(){
       }
       // BGM
       if(d.bgm){
-        await loadBGM();
+        await loadBGMList();
         for(let opt of E('bgmSel').options){if(opt.value===d.bgm||opt.value.endsWith(d.bgm.split(/[\\/]/).pop()))opt.selected=true}
       }
       pain();toast('已导入工程（'+S.length+' 个场景）','ok');
@@ -939,7 +939,25 @@ class H(SimpleHTTPRequestHandler):
                 if not allowed:
                     self._json({'error': 'forbidden'}, 403); return
                 if fp.exists() and fp.is_file():
-                    self._file(fp, 'image/png' if fp.suffix == '.png' else 'image/jpeg')
+                    # 按文件类型设置正确的 Content-Type
+                    ext = fp.suffix.lower()
+                    if ext in ('.mp4',):
+                        ct = 'video/mp4'
+                    elif ext in ('.webm',):
+                        ct = 'video/webm'
+                    elif ext in ('.mov',):
+                        ct = 'video/quicktime'
+                    elif ext in ('.mkv',):
+                        ct = 'video/x-matroska'
+                    elif ext == '.png':
+                        ct = 'image/png'
+                    elif ext in ('.jpg', '.jpeg'):
+                        ct = 'image/jpeg'
+                    elif ext in ('.gif',):
+                        ct = 'image/gif'
+                    else:
+                        ct = 'application/octet-stream'
+                    self._file(fp, ct)
                     return
             self._json({'error': 'not found'}, 404)
         elif p.path.startswith('/api/status/'):
@@ -1038,7 +1056,12 @@ class H(SimpleHTTPRequestHandler):
             bgm = data.get('bgm')
             tc = data.get('title_card')
             ec = data.get('end_card')
-            rid = data.get('render_id', str(uuid.uuid4()))
+            rid = data.get('render_id')
+            # 防止客户端 render_id 碰撞：如已存在则重新生成
+            if rid and rid in JOBS:
+                rid = str(uuid.uuid4())
+            else:
+                rid = rid or str(uuid.uuid4())
             out = OUT_BASE / rid; out.mkdir(parents=True, exist_ok=True)
             mp = out / 'manifest.json'
             mp.write_text(json.dumps(m, ensure_ascii=False, indent=2), encoding='utf-8')
@@ -1307,13 +1330,35 @@ class H(SimpleHTTPRequestHandler):
             project_dir.mkdir(parents=True, exist_ok=True)
             zip_buf = io.BytesIO(zip_bytes)
             with zipfile.ZipFile(zip_buf, 'r') as zf:
-                zf.extractall(project_dir)
+                # 安全检查：防止路径穿越和 zip bomb
+                total_size = 0
+                max_extract = 500 * 1024 * 1024  # 500MB 上限
+                safe_members = []
+                for member in zf.namelist():
+                    # 检查路径穿越
+                    member_path = (project_dir / member).resolve()
+                    try:
+                        member_path.relative_to(project_dir.resolve())
+                    except ValueError:
+                        self._json({'error': f'zip 包含非法路径: {member}'}, 400); return
+                    # 检查解压后总大小
+                    total_size += zf.getinfo(member).file_size
+                    if total_size > max_extract:
+                        self._json({'error': 'zip 解压后超过 500MB 限制'}, 400); return
+                    safe_members.append(member)
+                zf.extractall(project_dir, members=safe_members)
             # 读取 manifest 并修正路径
             mp = project_dir / 'manifest.json'
             if not mp.exists():
                 self._json({'error': 'zip 中未找到 manifest.json'}, 400); return
             manifest = json.loads(mp.read_text(encoding='utf-8'))
-            for scene in manifest.get('scenes', []):
+            # 校验 manifest 基本结构
+            if not isinstance(manifest, dict):
+                self._json({'error': 'manifest.json 不是有效 JSON 对象'}, 400); return
+            scenes = manifest.get('scenes')
+            if not isinstance(scenes, list):
+                self._json({'error': 'manifest.scenes 不是数组'}, 400); return
+            for scene in scenes:
                 img = scene.get('image', '')
                 if img and not Path(img).is_absolute():
                     scene['image'] = str((project_dir / img).resolve())

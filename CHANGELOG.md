@@ -5,6 +5,24 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [v1.7.0] - 2026-06-22
+
+### Fixed — 深层代码审计修复（9 项）
+
+- **BGM 侧链压缩静音段爆音**：`sidechaincompress` 的 `makeup` 从 `1/duck_ratio`（如 4.0）改为 `1.0`，后接 `volume` 滤镜控制整体音量，消除人声停止时 BGM 被放大 4 倍导致的削波失真
+- **导入工程后 BGM 列表不刷新**：`importProject()` 调用了不存在的 `loadBGM()`，修正为 `loadBGMList()`
+- **视频缩略图 Content-Type 错误**：`/thumb` 端点对所有文件统一返回 `image/png`，改为按扩展名判断（视频返回 `video/mp4` 等），修复前端 `<video>` 标签加载失败
+- **zip 导入路径穿越漏洞**：`/api/import` 的 `extractall()` 无路径检查，添加逐条 `relative_to()` 校验 + 500MB 解压上限
+- **图片替换按钮不支持视频**：`chImg()` 的 `accept` 从 `image/*` 改为 `image/*,video/*`，与批量上传和拖拽保持一致
+- **render_id 碰撞导致孤儿线程**：客户端传入已存在的 `render_id` 会覆盖 `JOBS` 字典，改为检测到碰撞时服务端重新生成
+- **manifest 结构未校验**：`/api/import` 添加 `isinstance` 校验，`manifest` 必须是 dict、`scenes` 必须是 list
+- **`process_audio` 死变量**：移除未使用的 `target_duration` 变量
+- **纯标点文本产生空字幕**：`split_sentences` 过滤只含标点的 chunk，避免 SRT 中出现空文本条目
+
+### Changed
+
+- CI Release 描述改为从 CHANGELOG 自动提取，不再写死文案
+
 ## [v1.6.2] - 2026-06-21
 
 ### Fixed

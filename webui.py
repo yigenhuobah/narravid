@@ -7,7 +7,7 @@ narravid Web UI v6 — 图片上传、缩略图预览、BGM 管理、在线预�
 """
 import argparse, base64, io, json, os, re, shutil, sys, threading, time, uuid
 from pathlib import Path
-from http.server import HTTPServer, SimpleHTTPRequestHandler
+from http.server import HTTPServer, SimpleHTTPRequestHandler, ThreadingHTTPServer
 import urllib.parse
 
 ROOT = Path(__file__).resolve().parent
@@ -397,12 +397,25 @@ function toast(msg,type){
 const SUB_DEFAULT={font:'Microsoft YaHei',size:16,color:'FFFFFF',outlineColor:'000000',outline:1,margin:30,align:2,bold:false};
 let subStyle={...SUB_DEFAULT};
 
-function hexToASS(h){return '&H00'+h}
+/* ASS/libass 颜色为 &HAABBGGRR（BGR），UI 拾色器是 RRGGBB，需交换 R/B */
+function hexToASS(h, alpha){
+  h=(h||'FFFFFF').replace(/[^0-9A-Fa-f]/g,'').toUpperCase().padStart(6,'0').slice(0,6);
+  let rr=h.slice(0,2),gg=h.slice(2,4),bb=h.slice(4,6);
+  let aa=(alpha||'00').toUpperCase();
+  return '&H'+aa+bb+gg+rr;
+}
+function assToHex(ass){
+  // 从 &HAABBGGRR 或 6 位 BBGGRR 还原 RRGGBB
+  let m=(ass||'').toUpperCase().match(/&H([0-9A-F]{2})?([0-9A-F]{6})/);
+  if(!m)return null;
+  let bgr=m[2],bb=bgr.slice(0,2),gg=bgr.slice(2,4),rr=bgr.slice(4,6);
+  return rr+gg+bb;
+}
 
 function buildSubStyleStr(){
   let s='FontName='+subStyle.font+',FontSize='+subStyle.size+
-    ',PrimaryColour='+hexToASS(subStyle.color)+
-    ',OutlineColour=&H64'+subStyle.outlineColor+
+    ',PrimaryColour='+hexToASS(subStyle.color,'00')+
+    ',OutlineColour='+hexToASS(subStyle.outlineColor,'64')+
     ',BorderStyle=3,Outline='+subStyle.outline+',Shadow=0'+
     ',MarginV='+subStyle.margin+',Alignment='+subStyle.align;
   if(subStyle.bold)s+=',Bold=1';
@@ -463,8 +476,9 @@ function applySubStyleFromStr(str){
   let m;
   if(m=str.match(/FontName=([^,]+)/))subStyle.font=m[1];
   if(m=str.match(/FontSize=(\d+)/))subStyle.size=parseInt(m[1]);
-  if(m=str.match(/PrimaryColour=&H00([0-9A-Fa-f]{6})/))subStyle.color=m[1].toUpperCase();
-  if(m=str.match(/OutlineColour=&H64([0-9A-Fa-f]{6})/))subStyle.outlineColor=m[1].toUpperCase();
+  // PrimaryColour / OutlineColour 按 ASS BGR 解析回 RRGGBB
+  if(m=str.match(/PrimaryColour=(&H[0-9A-Fa-f]+)/)){let hx=assToHex(m[1]);if(hx)subStyle.color=hx}
+  if(m=str.match(/OutlineColour=(&H[0-9A-Fa-f]+)/)){let hx=assToHex(m[1]);if(hx)subStyle.outlineColor=hx}
   if(m=str.match(/Outline=([\d.]+)/))subStyle.outline=parseFloat(m[1]);
   if(m=str.match(/MarginV=(\d+)/))subStyle.margin=parseInt(m[1]);
   if(m=str.match(/Alignment=(\d+)/))subStyle.align=parseInt(m[1]);
@@ -671,7 +685,7 @@ function pain(){
   });
   E('list').innerHTML=h;
 }
-function esc(s){return(s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')}
+function esc(s){return(s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#39;')}
 
 /* ── 进度解析 ── */
 function parseProgress(text){
@@ -719,9 +733,14 @@ function poll(){
   if(!rid)return;
   fetch('/api/status/'+rid).then(r=>r.json()).then(d=>{
     if(d.error){done(d.error);return}
+    if(d.cancelled){done('已取消');return}
     E('sm').textContent=d.progress||'渲染中';
     E('pf').style.width=parseProgress(d.progress)+'%';
-    if(d.done){done(null,d.video);return}
+    if(d.done){
+      if(d.cancelled||(d.progress&&d.progress.indexOf('取消')>=0)){done('已取消');return}
+      if(!d.video&&!d.error){done(d.progress&&d.progress.indexOf('失败')>=0?d.progress:'渲染结束但未生成视频');return}
+      done(null,d.video);return
+    }
     tmr=setTimeout(poll,800);
   }).catch(()=>{tmr=setTimeout(poll,1000)});
 }
@@ -736,7 +755,12 @@ function done(err,video){
     if(video){showPreview(video)}
   }
 }
-function cancel(){if(rid)fetch('/api/cancel/'+rid,{method:'POST'});clearTimeout(tmr);E('st').style.display='none';E('rb').disabled=false;rid=null;E('pf').style.width='0'}
+function cancel(){
+  if(rid)fetch('/api/cancel/'+rid,{method:'POST'});
+  clearTimeout(tmr);E('st').style.display='none';E('rb').disabled=false;rid=null;E('pf').style.width='0';
+  let b=E('rs');
+  b.textContent='⏹ 已取消';b.style.background='linear-gradient(135deg,#7f8c8d,#95a5a6)';b.style.display='block';
+}
 
 /* ── 视频预览 ── */
 function showPreview(url){
@@ -835,13 +859,17 @@ async function exportProject(){
   let m={title:'narravid',width:parseInt(res[0]),height:parseInt(res[1]),tts_engine:ttsEngine,workers:parseInt(E('wk').value),
     voice:E('v').value,speech_speed:parseFloat(E('sp').value),burn_subtitles:E('bs').checked,
     bgm_volume:parseFloat(E('bvol').value),card_duration:parseFloat(E('tcd').value),
+    end_card_duration:parseFloat(E('ecd').value),
+    title_card:E('tc').value.trim()||'',
+    end_card:E('ec').value.trim()||'',
     subtitle_style:buildSubStyleStr(),
     scenes:valid.map(s=>({image:s.image,text:s.text.trim(),hold_sec:s.hold||0}))};
   let bgm=E('bgmSel').value||null;
   toast('正在打包...','info');
   try{
     let resp=await fetch('/api/export',{method:'POST',headers:{'Content-Type':'application/json'},
-      body:JSON.stringify({manifest:m,bgm:bgm})});
+      body:JSON.stringify({manifest:m,bgm:bgm,title_card:m.title_card||null,end_card:m.end_card||null,
+        card_duration:m.card_duration,end_card_duration:m.end_card_duration})});
     if(!resp.ok){let d=await resp.json().catch(()=>({}));toast(d.error||'导出失败','error');return}
     let blob=await resp.blob();
     let url=URL.createObjectURL(blob);
@@ -867,22 +895,36 @@ async function importProject(){
       if(d.error){toast(d.error,'error');return}
       // 加载 manifest 到 UI
       let m=d.manifest;
-      S=m.scenes.map(s=>({image:s.image,text:s.text,hold:s.hold_sec||0}));
+      S=m.scenes.map(s=>({image:s.image,text:s.text||'',hold:s.hold_sec||s.hold||0}));
       if(m.tts_engine)ttsEngine=m.tts_engine;
       if(m.voice)E('v').value=m.voice;
-      if(m.speech_speed)E('sp').value=m.speech_speed;
+      if(m.speech_speed){E('sp').value=m.speech_speed;E('sv').textContent=parseFloat(m.speech_speed).toFixed(2)+'x'}
       if(m.workers)E('wk').value=m.workers;
       if(m.burn_subtitles!==undefined)E('bs').checked=m.burn_subtitles;
-      if(m.bgm_volume!==undefined)E('bvol').value=m.bgm_volume;
+      if(m.bgm_volume!==undefined){E('bvol').value=m.bgm_volume;E('bv').textContent=Math.round(parseFloat(m.bgm_volume)*100)+'%'}
       if(m.card_duration!==undefined)E('tcd').value=m.card_duration;
+      if(m.end_card_duration!==undefined)E('ecd').value=m.end_card_duration;
+      if(m.title_card)E('tc').value=m.title_card;
+      if(m.end_card)E('ec').value=m.end_card;
+      if(m.subtitle_style)applySubStyleFromStr(m.subtitle_style);
       if(m.width&&m.height){
         let res=m.width+'x'+m.height;
         for(let opt of E('res').options){if(opt.value===res)opt.selected=true}
       }
-      // BGM
+      // BGM：列表可能不含 project 子目录文件，直接挂上 option
       if(d.bgm){
         await loadBGMList();
-        for(let opt of E('bgmSel').options){if(opt.value===d.bgm||opt.value.endsWith(d.bgm.split(/[\\/]/).pop()))opt.selected=true}
+        let sel=E('bgmSel'),found=false;
+        for(let opt of sel.options){
+          if(opt.value===d.bgm||(opt.value&&d.bgm.endsWith(opt.value.split(/[\\/]/).pop()))){
+            opt.selected=true;found=true;break
+          }
+        }
+        if(!found){
+          let o=document.createElement('option');
+          o.value=d.bgm;o.textContent=d.bgm.split(/[\\/]/).pop()||'导入的 BGM';
+          sel.appendChild(o);sel.value=d.bgm;
+        }else{sel.value=d.bgm}
       }
       pain();toast('已导入工程（'+S.length+' 个场景）','ok');
     }catch(e){toast('导入失败: '+e,'error')}
@@ -973,10 +1015,24 @@ class H(SimpleHTTPRequestHandler):
                     progress = Path(pf).read_text(encoding='utf-8').strip() or progress
                 except Exception:
                     pass
-            resp = {'done': done, 'progress': progress, 'video': j.get('video'), 'srt': j.get('srt')}
+            cancelled = bool(j.get('cancelled')) or (
+                isinstance(progress, str) and '取消' in progress
+            )
+            resp = {
+                'done': done,
+                'progress': progress,
+                'video': j.get('video'),
+                'srt': j.get('srt'),
+                'cancelled': cancelled,
+            }
             if done:
                 if j.get('error'):
                     resp['error'] = j['error'][-300:]
+                elif cancelled:
+                    # 明确标记取消，避免前端当成成功
+                    resp['cancelled'] = True
+                    if not resp.get('error'):
+                        resp['error'] = '已取消'
                 else:
                     video = j.get('video', '')
                     # 回退：如果还没设置 video，直接扫目录
@@ -992,8 +1048,17 @@ class H(SimpleHTTPRequestHandler):
             self._json(resp)
         elif p.path == '/api/bgm-list':
             bgms = []
-            for f in sorted(UPLOAD_DIR.glob('*.mp3')) + sorted(UPLOAD_DIR.glob('*.wav')):
-                bgms.append({'name': f.name, 'path': str(f.resolve())})
+            # 递归：含导入工程 project_*/assets 下的 BGM
+            seen = set()
+            for pattern in ('**/*.mp3', '**/*.wav'):
+                for f in sorted(UPLOAD_DIR.glob(pattern)):
+                    if not f.is_file():
+                        continue
+                    key = str(f.resolve())
+                    if key in seen:
+                        continue
+                    seen.add(key)
+                    bgms.append({'name': f.name, 'path': key})
             self._json(bgms)
         elif p.path == '/api/tts-check':
             engine, label = _check_edge_tts()
@@ -1012,7 +1077,8 @@ class H(SimpleHTTPRequestHandler):
             else:
                 self._json({'error': 'not found'}, 404)
         else:
-            super().do_GET()
+            # 不暴露工作目录静态文件，避免源码被直接拉取
+            self._json({'error': 'not found'}, 404)
 
     def do_POST(self):
         try:
@@ -1039,11 +1105,19 @@ class H(SimpleHTTPRequestHandler):
                 raw = base64.b64decode(b64)
             except Exception:
                 self._json({'error': 'base64 解码失败'}, 400); return
-            # 大小校验
-            if kind == 'bgm' and len(raw) > MAX_BGM_SIZE:
-                self._json({'error': f'BGM 文件超过 {MAX_BGM_SIZE // 1024 // 1024}MB 限制'}, 413); return
-            elif len(raw) > MAX_VIDEO_SIZE:
-                self._json({'error': f'文件超过 {MAX_VIDEO_SIZE // 1024 // 1024}MB 限制'}, 413); return
+            # 大小校验：按类型区分图片 / 视频 / BGM
+            ext = Path(name).suffix.lower()
+            video_exts = {'.mp4', '.mov', '.mkv', '.avi', '.webm', '.flv'}
+            is_video = kind == 'video' or ext in video_exts
+            if kind == 'bgm' or ext in {'.mp3', '.wav', '.aac', '.m4a', '.flac', '.ogg'}:
+                if len(raw) > MAX_BGM_SIZE:
+                    self._json({'error': f'BGM 文件超过 {MAX_BGM_SIZE // 1024 // 1024}MB 限制'}, 413); return
+            elif is_video:
+                if len(raw) > MAX_VIDEO_SIZE:
+                    self._json({'error': f'视频超过 {MAX_VIDEO_SIZE // 1024 // 1024}MB 限制'}, 413); return
+            else:
+                if len(raw) > MAX_IMAGE_SIZE:
+                    self._json({'error': f'图片超过 {MAX_IMAGE_SIZE // 1024 // 1024}MB 限制'}, 413); return
             # sanitize filename: replace non-ASCII chars to avoid path/encoding issues
             safe_name = re.sub(r'[^\x20-\x7e]', '_', name)
             fp = UPLOAD_DIR / f'{uuid.uuid4().hex}_{safe_name}'
@@ -1124,7 +1198,8 @@ class H(SimpleHTTPRequestHandler):
             cancel_event = threading.Event()
             JOBS[rid] = {'proc': None, 'progress': 'TTS 生成中...', 'video': '', 'srt': '',
                          'progress_file': str(progress_file), 'out': out,
-                         'cancel_event': cancel_event, 'done': False, 'error': ''}
+                         'cancel_event': cancel_event, 'done': False, 'error': '',
+                         'cancelled': False}
 
             # 保存原始 argv 和 cwd，线程结束后恢复
             orig_argv = sys.argv
@@ -1158,8 +1233,15 @@ class H(SimpleHTTPRequestHandler):
                         tb = traceback.format_exc()
                         err_file = out / '_stderr.log'
                         err_file.write_text(tb, encoding='utf-8', errors='ignore')
-                        j['error'] = str(e)[-500:]
-                        j['progress'] = f'失败: {e}'[:200]
+                        msg = str(e)
+                        # 用户取消不记为普通失败
+                        if '取消' in msg or j.get('cancelled'):
+                            j['cancelled'] = True
+                            j['error'] = '已取消'
+                            j['progress'] = '已取消'
+                        else:
+                            j['error'] = msg[-500:]
+                            j['progress'] = f'失败: {e}'[:200]
                     finally:
                         # 恢复原始状态
                         sys.argv = orig_argv
@@ -1192,9 +1274,9 @@ class H(SimpleHTTPRequestHandler):
                     else:
                         stall_count = 0
                         last_progress = current_progress
-                    # 连续 30 次（60 秒）无进度更新则判定卡死
-                    if stall_count >= 30:
-                        j['error'] = '渲染超时：60 秒无进度更新'
+                    # 连续 90 次（约 180 秒）无进度更新则判定卡死（弱网 Edge TTS 需要更长时间）
+                    if stall_count >= 90:
+                        j['error'] = '渲染超时：180 秒无进度更新'
                         j['progress'] = '超时（渲染卡死）'
                         j['done'] = True
                         # 通知渲染线程中断
@@ -1207,7 +1289,9 @@ class H(SimpleHTTPRequestHandler):
                             j['cancel_event'].set()
                         return
                     if j.get('cancel_event') and j['cancel_event'].is_set():
+                        j['cancelled'] = True
                         j['progress'] = '已取消'
+                        j['error'] = j.get('error') or '已取消'
                         j['done'] = True
                         return
 
@@ -1238,7 +1322,9 @@ class H(SimpleHTTPRequestHandler):
                     _va.CancelToken.set_cancelled()
                 except Exception:
                     pass
+                j['cancelled'] = True
                 j['progress'] = '已取消'
+                j['error'] = j.get('error') or '已取消'
                 j['done'] = True
             self._json({'status': 'ok'})
 
@@ -1277,6 +1363,15 @@ class H(SimpleHTTPRequestHandler):
             # 收集需要打包的文件及其新路径
             collected = {}  # abs_path -> zip_relative_path
             manifest_copy = json.loads(json.dumps(m))  # deep copy
+            # 确保标题页/封尾页写入 manifest（兼容 body 顶层字段）
+            if data.get('title_card') and not manifest_copy.get('title_card'):
+                manifest_copy['title_card'] = data.get('title_card')
+            if data.get('end_card') and not manifest_copy.get('end_card'):
+                manifest_copy['end_card'] = data.get('end_card')
+            if data.get('card_duration') is not None and 'card_duration' not in manifest_copy:
+                manifest_copy['card_duration'] = data.get('card_duration')
+            if data.get('end_card_duration') is not None and 'end_card_duration' not in manifest_copy:
+                manifest_copy['end_card_duration'] = data.get('end_card_duration')
             for i, scene in enumerate(manifest_copy.get('scenes', [])):
                 img = scene.get('image', '')
                 if not img:
@@ -1308,7 +1403,6 @@ class H(SimpleHTTPRequestHandler):
                 zf.write(abs_path, zname)
             zf.close()
             zip_data = zip_buf.getvalue()
-            # 返回 base64
             self.send_response(200)
             self.send_header('Content-Type', 'application/zip')
             self.send_header('Content-Disposition', f'attachment; filename="narravid_project.zip"')
@@ -1432,9 +1526,13 @@ class H(SimpleHTTPRequestHandler):
         self.send_response(code); self.send_header('Content-Type', 'application/json; charset=utf-8'); self.end_headers()
         self.wfile.write(json.dumps(data, ensure_ascii=False).encode('utf-8'))
 
-    def _file(self, fp, ct):
+    def _file(self, fp, ct, as_attachment=False):
         self.send_response(200); self.send_header('Content-Type', ct)
-        self.send_header('Content-Disposition', f'attachment; filename="{fp.name}"')
+        # 缩略图/预览用 inline，下载类资源才 attachment
+        if as_attachment:
+            self.send_header('Content-Disposition', f'attachment; filename="{fp.name}"')
+        else:
+            self.send_header('Content-Disposition', f'inline; filename="{fp.name}"')
         self.send_header('Cache-Control', 'max-age=3600')
         self.end_headers(); self.wfile.write(fp.read_bytes())
 
@@ -1448,7 +1546,8 @@ def main():
     args = ap.parse_args()
     for d in [OUT_BASE, UPLOAD_DIR, TEMPLATE_DIR]:
         d.mkdir(parents=True, exist_ok=True)
-    srv = HTTPServer((args.host, args.port), H)
+    # ThreadingHTTPServer：上传/状态轮询/导出互不阻塞；渲染仍由 RENDER_LOCK 串行
+    srv = ThreadingHTTPServer((args.host, args.port), H)
     url = f'http://{args.host}:{args.port}'
     print(f'narravid Web UI: {url}')
     print(f'  打开浏览器访问上述地址即可')

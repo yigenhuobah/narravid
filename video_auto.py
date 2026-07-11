@@ -62,8 +62,27 @@ def ffprobe_duration(path: Path) -> float:
     out = subprocess.check_output([
         FFPROBE, '-v', 'error', '-show_entries', 'format=duration',
         '-of', 'default=noprint_wrappers=1:nokey=1', str(path)
-    ], text=True, encoding='utf-8').strip()
+    ], text=True, encoding='utf-8', timeout=60).strip()
     return float(out)
+
+
+def atempo_filter_chain(speed: float) -> list:
+    """Build one or more atempo filters. ffmpeg allows only 0.5–2.0 per filter."""
+    if abs(speed - 1.0) <= 1e-6:
+        return []
+    filters = []
+    s = float(speed)
+    # Speed up: peel off 2.0 factors
+    while s > 2.0 + 1e-9:
+        filters.append('atempo=2.000')
+        s /= 2.0
+    # Slow down: peel off 0.5 factors
+    while s < 0.5 - 1e-9:
+        filters.append('atempo=0.500')
+        s /= 0.5
+    if abs(s - 1.0) > 1e-6:
+        filters.append(f'atempo={s:.3f}')
+    return filters
 
 
 def srt_ts(sec: float) -> str:
@@ -258,14 +277,20 @@ def synthesize_edge_tts(text: str, media_path: Path, voice: str, rate: int = 0, 
 def synthesize_audio_with_retry(text: str, raw_audio_path: Path, engine: str, voice: str, rate: int = 0, volume: int = 100):
     if engine == 'edge':
         for attempt in range(MAX_TTS_RETRIES + 1):
+            _check_cancel()
             try:
                 synthesize_edge_tts(text, raw_audio_path, voice=voice, rate=rate, volume=volume)
                 return 'edge'
             except Exception:
+                _check_cancel()
                 if attempt < MAX_TTS_RETRIES:
-                    time.sleep(3)
+                    # 分段 sleep，便于取消及时生效
+                    for _ in range(6):
+                        _check_cancel()
+                        time.sleep(0.5)
                 else:
                     try:
+                        _check_cancel()
                         synthesize_system_tts(text, raw_audio_path.with_suffix('.raw.wav'), voice=DEFAULT_SYSTEM_VOICE, rate=rate, volume=volume)
                         run([FFMPEG, '-y', '-i', str(raw_audio_path.with_suffix('.raw.wav')),
                              '-ar', '24000', '-ac', '1', str(raw_audio_path)], silent=True)
@@ -274,6 +299,7 @@ def synthesize_audio_with_retry(text: str, raw_audio_path: Path, engine: str, vo
                     except Exception as fallback_err:
                         raise RuntimeError(f'edge-tts 和 system TTS 均失败: {fallback_err}') from fallback_err
     elif engine == 'system':
+        _check_cancel()
         synthesize_system_tts(text, raw_audio_path, voice=voice, rate=rate, volume=volume)
         return 'system'
     else:
@@ -284,16 +310,13 @@ def synthesize_audio_with_retry(text: str, raw_audio_path: Path, engine: str, vo
 
 def process_audio(raw_audio_path: Path, out_path: Path, speed: float, pad_sec: float):
     source_duration = ffprobe_duration(raw_audio_path)
-    filters = []
-    if abs(speed - 1.0) > 1e-6:
-        filters.append(f'atempo={speed:.3f}')
+    filters = atempo_filter_chain(speed)
     if pad_sec > 0:
         filters.append(f'apad=pad_dur={pad_sec:.3f}')
     if not filters:
         shutil.copyfile(raw_audio_path, out_path)
         return source_duration
-    # 不使用 -t 硬截断，改用 -avoid_negative_ts make_zero 确保时间戳正确
-    # atempo + apad 已自然产生目标时长，硬截断可能切掉尾音
+    # atempo 可链式（单段仅 0.5–2.0）；apad 补尾静音，不用 -t 硬截断以免切尾音
     run([FFMPEG, '-y', '-i', str(raw_audio_path),
          '-af', ','.join(filters),
          '-ar', '24000', '-ac', '1',
@@ -315,10 +338,12 @@ def make_scene_srt(segments, srt_path: Path):
     srt_path.write_text('\n'.join(rows), encoding='utf-8')
 
 
-def make_global_srt(scene_infos, out_path: Path):
+def make_global_srt(scene_infos, out_path: Path, smart_comma: bool = True):
     rows, idx, offset = [], 1, 0.0
     for scene in scene_infos:
-        for seg in build_sentence_segments(scene['text'], scene['narration_duration'], offset):
+        for seg in build_sentence_segments(
+            scene['text'], scene['narration_duration'], offset, smart_comma=smart_comma
+        ):
             rows.append(f"{idx}\n{srt_ts(seg['start'])} --> {srt_ts(seg['end'])}\n{seg['subtitle']}\n")
             idx += 1
         offset += scene['scene_duration']
@@ -531,6 +556,13 @@ def process_single_scene(idx: int, scene: dict, project_root: Path,
 
     # ── 字幕 + 渲染 ──
     scene_duration = narration_duration + hold_sec if narration_duration > 0 else (hold_sec or ffprobe_duration(wav))
+    # hold_sec：在音频尾部补静音，使音轨与 scene_duration 对齐；渲染不要用 -shortest
+    if hold_sec > 0 and narration_duration > 0:
+        padded_wav = tmp_dir / f'{idx:03d}.hold.wav'
+        run([FFMPEG, '-y', '-i', str(wav),
+             '-af', f'apad=pad_dur={hold_sec:.3f}',
+             '-ar', '24000', '-ac', '1', str(padded_wav)], silent=True)
+        wav = padded_wav
     segments = build_sentence_segments(text, narration_duration, 0.0, smart_comma=smart_comma) if text else []
     make_scene_srt(segments, srt)
 
@@ -542,19 +574,18 @@ def process_single_scene(idx: int, scene: dict, project_root: Path,
     _check_cancel()
     progress.report(idx, 'Render ...')
     if is_video:
-        # 视频背景：丢弃视频原始音轨，用 TTS 音频
-        # -stream_loop -1 循环视频, -t 截断到目标时长, 不用 -an（需要 wav 音轨）
+        # 视频背景：丢弃视频原始音轨，用 TTS 音频；-t 控制总时长（已含 hold）
         run([FFMPEG, '-y',
              '-stream_loop', '-1', '-i', str(image),
              '-i', str(wav),
-             '-map', '0:v:0', '-map', '1:a:0',  # 只取视频的视频流 + TTS 的音频流
+             '-map', '0:v:0', '-map', '1:a:0',
              '-vf', vf, '-r', str(fps), '-t', f'{scene_duration:.3f}',
              '-c:v', 'libx264', '-pix_fmt', 'yuv420p', '-c:a', 'aac', '-b:a', '192k',
              str(mp4)], silent=True)
     else:
-        # 图片背景：传统模式
+        # 图片背景：音频已含 hold 静音，用 -t 对齐；勿加 -shortest（会按较短流截断）
         run([FFMPEG, '-y', '-loop', '1', '-i', str(image), '-i', str(wav),
-             '-vf', vf, '-r', str(fps), '-t', f'{scene_duration:.3f}', '-shortest',
+             '-vf', vf, '-r', str(fps), '-t', f'{scene_duration:.3f}',
              '-c:v', 'libx264', '-pix_fmt', 'yuv420p', '-c:a', 'aac', '-b:a', '192k',
              str(mp4)], silent=True)
     progress.complete(idx, 'Render OK')
@@ -589,11 +620,11 @@ def main():
     parser.add_argument('--title-card-file', help='从 UTF-8 文件读取标题页文字 (优先于 --title-card)')
     parser.add_argument('--end-card', help='自动生成封尾页 (输入文字，如"感谢观看")')
     parser.add_argument('--end-card-file', help='从 UTF-8 文件读取封尾页文字 (优先于 --end-card)')
-    parser.add_argument('--card-duration', type=float, default=3.0,
+    parser.add_argument('--card-duration', type=float, default=None,
                         help='标题页停留秒数 (默认 3.0)')
-    parser.add_argument('--end-card-duration', type=float, default=0,
+    parser.add_argument('--end-card-duration', type=float, default=None,
                         help='封尾页停留秒数 (默认与标题页相同)')
-    parser.add_argument('--bgm-volume', type=float, default=0.25,
+    parser.add_argument('--bgm-volume', type=float, default=None,
                         help='BGM 音量 (0.0~1.0, 配音时 BGM 降到该比例, 默认 0.25)')
     parser.add_argument('--subtitle-style', help='字幕 ASS 样式字符串 (覆盖默认)')
     parser.add_argument('--title-card-bg', help='标题页/封尾页背景色 (如 #1a1a2e, 默认)')
@@ -640,7 +671,14 @@ def main():
     pad_sec = _safe_float(manifest.get('scene_tail_silence_sec', 0.16), 0.16, 'scene_tail_silence_sec')
     burn_subtitles = not args.no_burn and bool(manifest.get('burn_subtitles', True))
     bgm_path = args.bgm
-    bgm_volume = max(0.0, min(1.0, args.bgm_volume))
+    if args.bgm_volume is not None:
+        bgm_volume = max(0.0, min(1.0, args.bgm_volume))
+    else:
+        bgm_volume = max(0.0, min(1.0, _safe_float(
+            manifest.get('bgm_volume', 0.25), 0.25, 'bgm_volume')))
+    # 若仅有 manifest.bgm 且未传 --bgm
+    if not bgm_path and manifest.get('bgm'):
+        bgm_path = str(manifest.get('bgm'))
     title_card_text = None
     if args.title_card_file:
         try:
@@ -648,7 +686,7 @@ def main():
         except Exception as e:
             print(f'  [warn] 无法读取标题页文件: {e}')
     if not title_card_text:
-        title_card_text = args.title_card
+        title_card_text = args.title_card or manifest.get('title_card')
     end_card_text = None
     if args.end_card_file:
         try:
@@ -656,12 +694,25 @@ def main():
         except Exception as e:
             print(f'  [warn] 无法读取封尾页文件: {e}')
     if not end_card_text:
-        end_card_text = args.end_card
-    card_duration = max(1.0, args.card_duration)
-    end_card_duration = max(1.0, args.end_card_duration) if args.end_card_duration > 0 else card_duration
-    subtitle_style = args.subtitle_style
-    card_bg = args.title_card_bg or '#1a1a2e'
+        end_card_text = args.end_card or manifest.get('end_card')
+    if args.card_duration is not None:
+        card_duration = max(1.0, args.card_duration)
+    else:
+        card_duration = max(1.0, _safe_float(
+            manifest.get('card_duration', 3.0), 3.0, 'card_duration'))
+    if args.end_card_duration is not None:
+        end_card_duration = max(1.0, args.end_card_duration)
+    else:
+        end_card_duration = max(1.0, _safe_float(
+            manifest.get('end_card_duration', card_duration), card_duration, 'end_card_duration'))
+    # CLI 优先；否则读 manifest.subtitle_style（WebUI 也会写入 manifest）
+    subtitle_style = args.subtitle_style or manifest.get('subtitle_style') or None
+    if subtitle_style is not None and not isinstance(subtitle_style, str):
+        subtitle_style = None
+    card_bg = args.title_card_bg or manifest.get('title_card_bg') or '#1a1a2e'
     smart_comma = not args.no_smart_comma
+    if 'smart_comma' in manifest and not args.no_smart_comma:
+        smart_comma = bool(manifest.get('smart_comma'))
     workers = args.workers or _safe_int(manifest.get('workers', DEFAULT_WORKERS), DEFAULT_WORKERS, 'workers')
     # 至少 1 个 worker
     workers = max(1, workers)
@@ -764,9 +815,9 @@ def main():
                     failed.append(sidx)
 
         if failed:
-            print(f'\n警告: {len(failed)} 个场景失败: {failed}')
-            if len(failed) == num_scenes:
-                raise RuntimeError(f'所有场景均失败')
+            print(f'\n错误: {len(failed)} 个场景失败: {failed}')
+            # 任一正文场景失败即中止，避免静默缺镜成片
+            raise RuntimeError(f'{len(failed)} 个场景失败: {failed}')
 
         # 按 idx 排序，保证 concat 顺序正确
         for sidx in sorted(results.keys()):
@@ -791,9 +842,8 @@ def main():
                 print(f'[ERROR] scene {sidx} 失败: {e}')
                 failed.append(sidx)
         if failed:
-            print(f'\n警告: {len(failed)} 个场景失败: {failed}')
-            if not scene_infos:
-                raise RuntimeError('所有场景均失败')
+            print(f'\n错误: {len(failed)} 个场景失败: {failed}')
+            raise RuntimeError(f'{len(failed)} 个场景失败: {failed}')
 
     # ── concat（必须等所有场景完成） ──
     # 先追加封尾页（在 concat 之前生成）
@@ -857,9 +907,9 @@ def main():
         shutil.move(str(tmp_video), str(final_mp4))
         print('OK')
 
-    # global SRT
+    # global SRT（与烧录字幕共用 smart_comma 设置）
     final_srt = out_dir / f'{manifest_path.stem}.srt'
-    make_global_srt(scene_infos, final_srt)
+    make_global_srt(scene_infos, final_srt, smart_comma=smart_comma)
 
     total_dur = round(sum(s['scene_duration'] for s in scene_infos), 3)
     update_progress('完成')
@@ -874,6 +924,16 @@ def main():
         shutil.rmtree(tmp_dir, ignore_errors=True)
         # 清理 WebUI 写入的 card 文本文件
         for f in out_dir.glob('_*_card.txt'):
+            try: f.unlink()
+            except Exception: pass
+        # 清理系统 TTS 残留的 ps1/txt
+        for f in audio_dir.glob('*.ps1'):
+            try: f.unlink()
+            except Exception: pass
+        for f in audio_dir.glob('*.txt'):
+            try: f.unlink()
+            except Exception: pass
+        for f in audio_dir.glob('*.raw.wav'):
             try: f.unlink()
             except Exception: pass
         print('  临时文件已清理')

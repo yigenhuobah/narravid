@@ -5,6 +5,32 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [v1.8.0] - 2026-07-12
+
+### Fixed — 全量代码审议修复
+
+- **CI Release 正文丢失**：changelog 提取步骤用 Python 打开字面路径 `"$GITHUB_ENV"`，改为 `os.environ["GITHUB_ENV"]`，Release 更新内容可正常注入
+- **图片场景 hold_sec 被吃掉**：渲染去掉 `-shortest`，并以 `apad=whole_dur` 将音轨垫满 `scene_duration`，停顿秒数生效
+- **取消渲染显示成功**：`/api/cancel` 与 status 增加 `cancelled`/`error=已取消`；前端 poll/cancel 明确展示取消态
+- **部分场景失败仍出片**：任一正文场景失败即 raise，避免静默缺镜；串行+标题页也不再只产出封面
+- **语速 >2.0 失败**：`atempo` 改为可链式（单段 0.5–2.0），支持至 3.0 语速
+- **ASS 字幕颜色 R/B 颠倒**：UI 拾色器 RRGGBB 正确转换为 ASS `&HAABBGGRR`
+- **工程导出丢标题/封尾**：export 写入 `title_card`/`end_card` 与时长；import 回填 UI
+- **导入 BGM 挂不上**：`/api/bgm-list` 递归扫描；import 时为 BGM 补 option
+- **全局 SRT 忽略 smart_comma**：`make_global_srt` 与烧录字幕共用设置
+- **CLI 忽略 manifest 字段**：`subtitle_style`/`bgm_volume`/`title_card` 等可从 manifest 读取（CLI 优先）
+- **图片 20MB 限制未执行**：服务端按扩展名区分图片/视频/BGM 大小限制
+- **未知路径泄露源码**：取消 `super().do_GET()` 目录回落，未知路径 404
+- **ffprobe 无超时**：`ffprobe_duration` 增加 60s timeout
+- **弱网误判卡死**：stall 判定由 60s 放宽到约 180s
+- **系统 TTS 残留文件**：清理 audio 目录下 `.ps1`/`.txt`/`.raw.wav`
+
+### Changed
+
+- WebUI 改用 `ThreadingHTTPServer`（渲染仍由 `RENDER_LOCK` 串行）
+- 缩略图/预览改为 `Content-Disposition: inline`
+- TTS 重试等待期间检查 `CancelToken`，取消更及时
+
 ## [v1.7.0] - 2026-06-22
 
 ### Fixed — 深层代码审计修复（9 项）

@@ -54,7 +54,7 @@ jobs:
         id: changelog
         shell: python
         run: |
-          import re, sys
+          import os, re
           tag = "${{ github.ref_name }}"
           with open("CHANGELOG.md", encoding="utf-8") as f:
               content = f.read()
@@ -62,8 +62,8 @@ jobs:
           pattern = rf'## \[{re.escape(tag)}\][^\n]*\n(.*?)(?=\n## \[|$)'
           m = re.search(pattern, content, re.DOTALL)
           body = m.group(1).strip() if m else "（CHANGELOG 中未找到此版本记录）"
-          # Write to GITHUB_ENV
-          with open("$GITHUB_ENV", "a", encoding="utf-8") as f:
+          # Must use os.environ['GITHUB_ENV'] — a literal "$GITHUB_ENV" path does not work in Python
+          with open(os.environ["GITHUB_ENV"], "a", encoding="utf-8") as f:
               f.write(f"RELEASE_BODY<<EOF\n{body}\nEOF\n")
 
       - name: Create Release

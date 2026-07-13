@@ -50,12 +50,77 @@ DEFAULT_WORKERS = 4
 
 # ── helpers ──────────────────────────────────────────────────────
 
+# Active ffmpeg/ffprobe children — cancelled jobs kill these promptly.
+_ACTIVE_PROCS = []
+_ACTIVE_PROCS_LOCK = threading.Lock()
+
+
+def _kill_process(proc: subprocess.Popen):
+    """Best-effort kill of a child process (and its tree on Windows)."""
+    if proc is None or proc.poll() is not None:
+        return
+    try:
+        if os.name == 'nt':
+            # /T kills the whole tree (ffmpeg often spawns helpers)
+            subprocess.run(
+                ['taskkill', '/F', '/T', '/PID', str(proc.pid)],
+                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                timeout=10,
+            )
+        else:
+            proc.kill()
+    except Exception:
+        try:
+            proc.kill()
+        except Exception:
+            pass
+
+
+def kill_active_subprocesses():
+    """Kill any in-flight run() children (used by CancelToken)."""
+    with _ACTIVE_PROCS_LOCK:
+        procs = list(_ACTIVE_PROCS)
+    for p in procs:
+        _kill_process(p)
+
+
 def run(cmd, silent=False):
+    """Run a subprocess; honor CancelToken by killing mid-flight ffmpeg."""
+    _check_cancel()
     kwargs = {}
     if silent:
         kwargs['stdout'] = subprocess.DEVNULL
         kwargs['stderr'] = subprocess.DEVNULL
-    subprocess.run(cmd, check=True, timeout=600, **kwargs)
+    # Avoid shell; inherit no extra handles beyond stdio redirects.
+    proc = subprocess.Popen(cmd, **kwargs)
+    with _ACTIVE_PROCS_LOCK:
+        _ACTIVE_PROCS.append(proc)
+    try:
+        deadline = time.time() + 600
+        while True:
+            try:
+                ret = proc.wait(timeout=0.4)
+                break
+            except subprocess.TimeoutExpired:
+                if CancelToken.is_cancelled():
+                    _kill_process(proc)
+                    try:
+                        proc.wait(timeout=5)
+                    except Exception:
+                        pass
+                    _check_cancel()  # raise user/abort error
+                    raise RuntimeError('渲染已中止')
+                if time.time() >= deadline:
+                    _kill_process(proc)
+                    raise subprocess.TimeoutExpired(cmd, 600)
+        if ret != 0:
+            raise subprocess.CalledProcessError(ret, cmd)
+    finally:
+        with _ACTIVE_PROCS_LOCK:
+            try:
+                _ACTIVE_PROCS.remove(proc)
+            except ValueError:
+                pass
 
 
 def ffprobe_duration(path: Path) -> float:
@@ -457,14 +522,32 @@ def mix_bgm(voice_audio: Path, bgm_path: Path, out_path: Path, duck_ratio: float
 # ── 并行场景处理 ────────────────────────────────────────────────
 
 class CancelToken:
-    """全局取消令牌，供 WebUI 外部控制渲染中断"""
+    """进程内取消/中止令牌（WebUI 与 fail-fast 共用）。
+
+    - set_cancelled(): 用户取消（文案含「用户取消」）
+    - set_aborted(): 内部中止（场景失败 fail-fast 等，不伪装成用户取消）
+    """
     _cancelled = False
+    _user = False
     _lock = threading.Lock()
 
     @classmethod
     def set_cancelled(cls):
+        """User-initiated cancel."""
         with cls._lock:
             cls._cancelled = True
+            cls._user = True
+        kill_active_subprocesses()
+
+    @classmethod
+    def set_aborted(cls):
+        """Internal abort (e.g. fail-fast). Does not mark as user cancel."""
+        with cls._lock:
+            cls._cancelled = True
+            # keep _user True if user already cancelled
+            if not cls._user:
+                cls._user = False
+        kill_active_subprocesses()
 
     @classmethod
     def is_cancelled(cls) -> bool:
@@ -472,15 +555,68 @@ class CancelToken:
             return cls._cancelled
 
     @classmethod
+    def is_user_cancel(cls) -> bool:
+        with cls._lock:
+            return cls._cancelled and cls._user
+
+    @classmethod
     def reset(cls):
         with cls._lock:
             cls._cancelled = False
+            cls._user = False
 
 
 def _check_cancel():
-    """在关键步骤检查是否已取消，如已取消则抛出异常"""
+    """在关键步骤检查是否已取消/中止，如是则抛出异常"""
     if CancelToken.is_cancelled():
-        raise RuntimeError('渲染已被用户取消')
+        if CancelToken.is_user_cancel():
+            raise RuntimeError('渲染已被用户取消')
+        raise RuntimeError('渲染已中止')
+
+
+def parse_boolish(val, default=True):
+    """Manifest/CLI 友好的布尔解析。"""
+    if val is None:
+        return default
+    if isinstance(val, bool):
+        return val
+    if isinstance(val, (int, float)):
+        return val != 0
+    if isinstance(val, str):
+        s = val.strip().lower()
+        if s in ('0', 'false', 'no', 'off', 'n', 'disabled', 'null', 'none', ''):
+            return False
+        if s in ('1', 'true', 'yes', 'on', 'y', 'enabled'):
+            return True
+        # 未知字符串：保守沿用 default，避免 typo 静默当 True
+        return default
+    return bool(val)
+
+
+def resolve_positive_duration(val, fallback: float, name: str = 'duration') -> float:
+    """解析时长；缺失/无效/≤0 时回退到 fallback（至少 1.0）。
+
+    语义：0 / 负数 = “未单独指定”，使用 fallback（如 end_card 跟标题页同长）。
+    这与「max(1.0, val) 把 0 夹成 1 秒」不同，是刻意的同长回退。
+    """
+    if val is None:
+        return max(1.0, float(fallback))
+    try:
+        f = float(val)
+    except (ValueError, TypeError):
+        print(f'  [warn] 字段 {name} 值无效 ({val!r})，使用默认值 {fallback}')
+        return max(1.0, float(fallback))
+    if f <= 0:
+        return max(1.0, float(fallback))
+    return max(1.0, f)
+
+
+def is_cancel_error(err) -> bool:
+    """True only for user-cancel errors (not internal abort / plain failures)."""
+    if not isinstance(err, BaseException):
+        return False
+    msg = str(err)
+    return '用户取消' in msg or msg.strip() == '渲染已被用户取消'
 
 
 class ProgressTracker:
@@ -557,12 +693,15 @@ def process_single_scene(idx: int, scene: dict, project_root: Path,
     # ── 字幕 + 渲染 ──
     scene_duration = narration_duration + hold_sec if narration_duration > 0 else (hold_sec or ffprobe_duration(wav))
     # hold_sec：在音频尾部补静音，使音轨与 scene_duration 对齐；渲染不要用 -shortest
+    # 复用 process_audio（speed=1）统一采样率/apad，避免第二套 ffmpeg 滤镜分叉
+    # pad_sec(scene_tail_silence) 已含在 narration_duration 内；hold 再叠一层尾静音（有意）
     if hold_sec > 0 and narration_duration > 0:
         padded_wav = tmp_dir / f'{idx:03d}.hold.wav'
-        run([FFMPEG, '-y', '-i', str(wav),
-             '-af', f'apad=pad_dur={hold_sec:.3f}',
-             '-ar', '24000', '-ac', '1', str(padded_wav)], silent=True)
+        actual = process_audio(wav, padded_wav, 1.0, hold_sec)
         wav = padded_wav
+        # 以实际 ffprobe 时长为准，避免 apad/采样取整与算术不一致
+        if actual and actual > 0:
+            scene_duration = actual
     segments = build_sentence_segments(text, narration_duration, 0.0, smart_comma=smart_comma) if text else []
     make_scene_srt(segments, srt)
 
@@ -669,16 +808,29 @@ def main():
         print(f'  [warn] 语速 {speech_speed} 过高，已调整为 3.0')
         speech_speed = 3.0
     pad_sec = _safe_float(manifest.get('scene_tail_silence_sec', 0.16), 0.16, 'scene_tail_silence_sec')
-    burn_subtitles = not args.no_burn and bool(manifest.get('burn_subtitles', True))
+    # parse_boolish：避免 manifest 里 "false"/"0" 被 bool() 当成 True
+    burn_subtitles = not args.no_burn and parse_boolish(
+        manifest.get('burn_subtitles', True), default=True)
     bgm_path = args.bgm
     if args.bgm_volume is not None:
         bgm_volume = max(0.0, min(1.0, args.bgm_volume))
     else:
         bgm_volume = max(0.0, min(1.0, _safe_float(
             manifest.get('bgm_volume', 0.25), 0.25, 'bgm_volume')))
-    # 若仅有 manifest.bgm 且未传 --bgm
+    # 若仅有 manifest.bgm 且未传 --bgm；相对路径相对 manifest 目录（与 scene.image 一致）
     if not bgm_path and manifest.get('bgm'):
         bgm_path = str(manifest.get('bgm'))
+    if bgm_path:
+        bp = Path(bgm_path)
+        if not bp.is_absolute():
+            # CLI --bgm 相对 cwd；manifest.bgm 相对 project_root
+            if args.bgm:
+                bp = (Path.cwd() / bp).resolve()
+            else:
+                bp = (project_root / bp).resolve()
+        else:
+            bp = bp.resolve()
+        bgm_path = str(bp)
     title_card_text = None
     if args.title_card_file:
         try:
@@ -701,10 +853,11 @@ def main():
         card_duration = max(1.0, _safe_float(
             manifest.get('card_duration', 3.0), 3.0, 'card_duration'))
     if args.end_card_duration is not None:
-        end_card_duration = max(1.0, args.end_card_duration)
+        # 0 / 负数：与旧版一致，表示“与标题页时长相同”
+        end_card_duration = resolve_positive_duration(args.end_card_duration, card_duration, 'end_card_duration')
     else:
-        end_card_duration = max(1.0, _safe_float(
-            manifest.get('end_card_duration', card_duration), card_duration, 'end_card_duration'))
+        end_card_duration = resolve_positive_duration(
+            manifest.get('end_card_duration', None), card_duration, 'end_card_duration')
     # CLI 优先；否则读 manifest.subtitle_style（WebUI 也会写入 manifest）
     subtitle_style = args.subtitle_style or manifest.get('subtitle_style') or None
     if subtitle_style is not None and not isinstance(subtitle_style, str):
@@ -712,7 +865,7 @@ def main():
     card_bg = args.title_card_bg or manifest.get('title_card_bg') or '#1a1a2e'
     smart_comma = not args.no_smart_comma
     if 'smart_comma' in manifest and not args.no_smart_comma:
-        smart_comma = bool(manifest.get('smart_comma'))
+        smart_comma = parse_boolish(manifest.get('smart_comma'), default=True)
     workers = args.workers or _safe_int(manifest.get('workers', DEFAULT_WORKERS), DEFAULT_WORKERS, 'workers')
     # 至少 1 个 worker
     workers = max(1, workers)
@@ -805,6 +958,8 @@ def main():
                 )
                 future_to_idx[future] = sidx
 
+            first_err = None
+            user_cancelled = False
             for future in as_completed(future_to_idx):
                 sidx = future_to_idx[future]
                 try:
@@ -813,11 +968,32 @@ def main():
                 except Exception as e:
                     print(f'[ERROR] scene {sidx} 失败: {e}')
                     failed.append(sidx)
+                    # 优先保留“真实根因”，不要被兄弟 worker 的中止文案抢成 first_err
+                    if is_cancel_error(e):
+                        user_cancelled = True
+                        if first_err is None:
+                            first_err = e
+                    else:
+                        if first_err is None or is_cancel_error(first_err) or str(first_err) == '渲染已中止':
+                            first_err = e
+                    # fail-fast：内部中止（非用户取消语义），缩短尾延迟
+                    if not CancelToken.is_user_cancel():
+                        CancelToken.set_aborted()
+                    else:
+                        CancelToken.set_cancelled()
 
         if failed:
             print(f'\n错误: {len(failed)} 个场景失败: {failed}')
             # 任一正文场景失败即中止，避免静默缺镜成片
-            raise RuntimeError(f'{len(failed)} 个场景失败: {failed}')
+            # 取消令牌可能已被 fail-fast 置位；重置以免污染同进程后续任务
+            was_user = CancelToken.is_user_cancel() or user_cancelled
+            try:
+                CancelToken.reset()
+            except Exception:
+                pass
+            if was_user or is_cancel_error(first_err):
+                raise RuntimeError('渲染已被用户取消') from first_err
+            raise RuntimeError(f'{len(failed)} 个场景失败: {failed}') from first_err
 
         # 按 idx 排序，保证 concat 顺序正确
         for sidx in sorted(results.keys()):
@@ -826,6 +1002,7 @@ def main():
     else:
         # 串行模式（workers=1 或只有 1 个场景）
         failed = []
+        first_err = None
         for sidx, scene in enumerate(manifest['scenes'], 1):
             try:
                 info = process_single_scene(
@@ -841,11 +1018,20 @@ def main():
             except Exception as e:
                 print(f'[ERROR] scene {sidx} 失败: {e}')
                 failed.append(sidx)
+                first_err = e
+                break  # fail-fast：不再继续后续场景
         if failed:
             print(f'\n错误: {len(failed)} 个场景失败: {failed}')
-            raise RuntimeError(f'{len(failed)} 个场景失败: {failed}')
+            if is_cancel_error(first_err) or CancelToken.is_user_cancel():
+                try:
+                    CancelToken.reset()
+                except Exception:
+                    pass
+                raise RuntimeError('渲染已被用户取消') from first_err
+            raise RuntimeError(f'{len(failed)} 个场景失败: {failed}') from first_err
 
     # ── concat（必须等所有场景完成） ──
+    _check_cancel()
     # 先追加封尾页（在 concat 之前生成）
     end_card_path = None
     if end_card_text:

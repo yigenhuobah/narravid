@@ -700,7 +700,9 @@ function parseProgress(text){
 }
 
 /* ── 渲染 ── */
+let userCancelled=false; // 硬闸：取消后忽略成功 status，禁止重叠 render
 async function render(){
+  if(E('rb').disabled)return; // 进行中/取消中禁止重叠
   // 实时从 DOM 读取 textarea 值（防止 oninput 未同步的场景）
   document.querySelectorAll('.scene textarea').forEach((ta,i)=>{if(S[i])S[i].text=ta.value});
   let valid=S.filter(s=>s.image);
@@ -719,6 +721,7 @@ async function render(){
     end_card:E('ec').value.trim()||null,
     card_duration:parseFloat(E('tcd').value),
     end_card_duration:parseFloat(E('ecd').value)};
+  userCancelled=false;
   rid='r'+Math.random().toString(36).slice(2,8);
   E('st').style.display='block';E('sm').textContent='正在生成视频...';E('rb').disabled=true;
   E('pf').style.width='2%';
@@ -726,40 +729,68 @@ async function render(){
     let r=await fetch('/api/render',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({...body,render_id:rid})});
     let d=await r.json();
     if(d.error)throw new Error(d.error);
+    // 若 await 期间用户已取消：用服务端 id 再发一次 cancel，勿启动成功轮询
+    if(userCancelled){
+      const realId=d.render_id||rid;
+      if(realId)fetch('/api/cancel/'+realId,{method:'POST'});
+      rid=null;E('st').style.display='none';E('rb').disabled=false;E('pf').style.width='0';
+      return;
+    }
     rid=d.render_id;poll();
-  }catch(e){done(e.message)}
+  }catch(e){
+    if(userCancelled){rid=null;E('st').style.display='none';E('rb').disabled=false;return}
+    done(e.message)
+  }
 }
 function poll(){
-  if(!rid)return;
-  fetch('/api/status/'+rid).then(r=>r.json()).then(d=>{
+  if(!rid||userCancelled)return;
+  const pollRid=rid;
+  fetch('/api/status/'+pollRid).then(r=>r.json()).then(d=>{
+    // 用户已点取消或开始了新任务：丢弃过期响应（含成功）
+    if(rid!==pollRid||userCancelled)return;
+    // 超时诊断优先于 cancelled 标志（后端可能两者并存）
+    if(d.error&&String(d.error).indexOf('超时')>=0){done(d.error);return}
+    if(d.cancelled||(d.error&&String(d.error).indexOf('取消')>=0)){done('已取消',null,true);return}
     if(d.error){done(d.error);return}
-    if(d.cancelled){done('已取消');return}
     E('sm').textContent=d.progress||'渲染中';
     E('pf').style.width=parseProgress(d.progress)+'%';
     if(d.done){
-      if(d.cancelled||(d.progress&&d.progress.indexOf('取消')>=0)){done('已取消');return}
+      if(d.cancelled||(d.progress&&d.progress.indexOf('取消')>=0)){done('已取消',null,true);return}
       if(!d.video&&!d.error){done(d.progress&&d.progress.indexOf('失败')>=0?d.progress:'渲染结束但未生成视频');return}
       done(null,d.video);return
     }
     tmr=setTimeout(poll,800);
-  }).catch(()=>{tmr=setTimeout(poll,1000)});
+  }).catch(()=>{if(rid===pollRid&&!userCancelled)tmr=setTimeout(poll,1000)});
 }
-function done(err,video){
-  clearTimeout(tmr);E('st').style.display='none';E('rb').disabled=false;rid=null;
+function done(err,video,asCancel){
+  clearTimeout(tmr);E('st').style.display='none';E('rb').disabled=false;rid=null;userCancelled=false;
   E('pf').style.width='0';
   let b=E('rs');
-  if(err){b.textContent='❌ '+err;b.style.background='linear-gradient(135deg,#c0392b,#e74c3c)';b.style.display='block'}
-  else{
+  if(asCancel||(err&&String(err).indexOf('取消')>=0)){
+    b.textContent='⏹ 已取消';b.style.background='linear-gradient(135deg,#7f8c8d,#95a5a6)';b.style.display='block';
+  }else if(err){
+    b.textContent='❌ '+err;b.style.background='linear-gradient(135deg,#c0392b,#e74c3c)';b.style.display='block'
+  }else{
     currentVideo=video||'';
     b.textContent='✅ 视频已生成！';b.style.background='linear-gradient(135deg,#1e8449,#27ae60)';b.style.display='block';
     if(video){showPreview(video)}
   }
 }
 function cancel(){
-  if(rid)fetch('/api/cancel/'+rid,{method:'POST'});
-  clearTimeout(tmr);E('st').style.display='none';E('rb').disabled=false;rid=null;E('pf').style.width='0';
+  const cancelRid=rid;
+  userCancelled=true; // 硬闸：后续 poll 成功一律丢弃
+  clearTimeout(tmr);
+  if(cancelRid)fetch('/api/cancel/'+cancelRid,{method:'POST'});
+  E('st').style.display='none';E('pf').style.width='0';
+  // 取消期间保持按钮禁用，直到确认服务端登记或超时，避免重叠 render
   let b=E('rs');
   b.textContent='⏹ 已取消';b.style.background='linear-gradient(135deg,#7f8c8d,#95a5a6)';b.style.display='block';
+  // 稍后释放按钮并清 rid（render await 返回时也会处理）
+  setTimeout(()=>{
+    if(rid===cancelRid)rid=null;
+    E('rb').disabled=false;
+    userCancelled=false;
+  },2000);
 }
 
 /* ── 视频预览 ── */
@@ -898,8 +929,8 @@ async function importProject(){
       S=m.scenes.map(s=>({image:s.image,text:s.text||'',hold:s.hold_sec||s.hold||0}));
       if(m.tts_engine)ttsEngine=m.tts_engine;
       if(m.voice)E('v').value=m.voice;
-      if(m.speech_speed){E('sp').value=m.speech_speed;E('sv').textContent=parseFloat(m.speech_speed).toFixed(2)+'x'}
-      if(m.workers)E('wk').value=m.workers;
+      if(m.speech_speed!==undefined&&m.speech_speed!==null&&m.speech_speed!==''){E('sp').value=m.speech_speed;E('sv').textContent=parseFloat(m.speech_speed).toFixed(2)+'x'}
+      if(m.workers!==undefined&&m.workers!==null&&m.workers!=='')E('wk').value=m.workers;
       if(m.burn_subtitles!==undefined)E('bs').checked=m.burn_subtitles;
       if(m.bgm_volume!==undefined){E('bvol').value=m.bgm_volume;E('bv').textContent=Math.round(parseFloat(m.bgm_volume)*100)+'%'}
       if(m.card_duration!==undefined)E('tcd').value=m.card_duration;
@@ -948,6 +979,121 @@ init();
 
 JOBS = {}
 RENDER_LOCK = threading.Lock()  # 全局渲染锁：同时只允许一个渲染任务执行
+ACTIVE_RENDER_ID = None  # 当前持有 RENDER_LOCK 并执行 main() 的 job id
+_ACTIVE_RENDER_LOCK = threading.Lock()
+# 渲染媒体允许目录：uploads / examples-assets / 输出树
+MEDIA_ALLOWED_DIRS = [
+    UPLOAD_DIR.resolve(),
+    (ROOT / 'examples-assets').resolve(),
+    OUT_BASE.resolve(),
+]
+
+
+def _set_active_render(rid):
+    global ACTIVE_RENDER_ID
+    with _ACTIVE_RENDER_LOCK:
+        ACTIVE_RENDER_ID = rid
+
+
+def _get_active_render():
+    with _ACTIVE_RENDER_LOCK:
+        return ACTIVE_RENDER_ID
+
+
+def _is_under(path: Path, root: Path) -> bool:
+    """True if resolved path is inside root (or is root)."""
+    try:
+        path.resolve().relative_to(root.resolve())
+        return True
+    except (ValueError, OSError):
+        return False
+
+
+def _is_under_any(path: Path, roots) -> bool:
+    for root in roots:
+        if _is_under(path, root):
+            return True
+    return False
+
+
+def _sanitize_upload_name(name: str) -> str:
+    """Basename only; strip path separators / traversal; ASCII-ish safe chars."""
+    base = Path(str(name or '')).name or 'file.bin'
+    safe = re.sub(r'[^\w.\-]+', '_', base).strip('._') or 'file.bin'
+    return safe
+
+
+def _sanitize_render_id(rid) -> str | None:
+    """Client render_id must be a simple token; reject path traversal/absolute."""
+    rid = (str(rid) if rid is not None else '').strip()
+    if not rid:
+        return None
+    if not re.fullmatch(r'[\w.-]{1,64}', rid):
+        return None
+    if rid in ('.', '..') or '..' in rid:
+        return None
+    return rid
+
+
+def _job_out_dir(rid: str) -> Path | None:
+    """Resolve job output dir strictly under OUT_BASE."""
+    safe = _sanitize_render_id(rid)
+    if not safe:
+        return None
+    out = (OUT_BASE / safe).resolve()
+    if not _is_under(out, OUT_BASE):
+        return None
+    return out
+
+
+def _resolve_media_path(raw, base_dir: Path = None) -> Path | None:
+    """Resolve scene/BGM path; must exist as file under MEDIA_ALLOWED_DIRS."""
+    if not raw:
+        return None
+    p = Path(str(raw))
+    if not p.is_absolute():
+        base = base_dir or UPLOAD_DIR
+        p = (base / p).resolve()
+    else:
+        p = p.resolve()
+    if not (p.exists() and p.is_file() and _is_under_any(p, MEDIA_ALLOWED_DIRS)):
+        return None
+    return p
+
+
+def _is_waiting_for_lock(rid, job: dict) -> bool:
+    """Job has not yet become the active renderer (still queued)."""
+    active = _get_active_render()
+    if active == rid:
+        return False
+    if active is not None:
+        return True
+    return not job.get('_started')
+
+
+def _looks_like_cancel(msg) -> bool:
+    """User-cancel only — not internal '渲染已中止'."""
+    if not isinstance(msg, str):
+        return False
+    return '用户取消' in msg or msg.strip() in ('已取消', '渲染已被用户取消')
+
+
+def _mark_job_cancelled(job: dict, error: str = '已取消'):
+    """Mark a job as cancelled/done without clobbering a prior non-cancel error unnecessarily."""
+    job['cancelled'] = True
+    job['progress'] = '已取消'
+    job['error'] = job.get('error') or error
+    job['done'] = True
+
+
+def _signal_cancel_token_if_active(rid):
+    """仅当 rid 是当前正在执行的渲染时，才设置全局 CancelToken。"""
+    if rid and rid == _get_active_render():
+        try:
+            import video_auto as _va
+            _va.CancelToken.set_cancelled()
+        except Exception:
+            pass
 
 
 def _check_edge_tts():
@@ -1009,19 +1155,21 @@ class H(SimpleHTTPRequestHandler):
                 self._json({'error': 'not found'}, 404); return
             done = j.get('done', False)
             progress = j.get('progress', '')
-            pf = j.get('progress_file')
-            if pf and Path(pf).exists():
-                try:
-                    progress = Path(pf).read_text(encoding='utf-8').strip() or progress
-                except Exception:
-                    pass
-            cancelled = bool(j.get('cancelled')) or (
-                isinstance(progress, str) and '取消' in progress
-            )
+            cancelled = bool(j.get('cancelled'))
+            # 终态（取消/超时/失败）以 job 字段为准，勿被仍在写的 progress_file 盖掉
+            if not (done or cancelled or j.get('error')):
+                pf = j.get('progress_file')
+                if pf and Path(pf).exists():
+                    try:
+                        progress = Path(pf).read_text(encoding='utf-8').strip() or progress
+                    except Exception:
+                        pass
+            if not cancelled:
+                cancelled = _looks_like_cancel(progress) or _looks_like_cancel(j.get('error'))
             resp = {
                 'done': done,
                 'progress': progress,
-                'video': j.get('video'),
+                'video': j.get('video') if not cancelled else '',
                 'srt': j.get('srt'),
                 'cancelled': cancelled,
             }
@@ -1035,14 +1183,19 @@ class H(SimpleHTTPRequestHandler):
                         resp['error'] = '已取消'
                 else:
                     video = j.get('video', '')
-                    # 回退：如果还没设置 video，直接扫目录
+                    # 回退：如果还没设置 video，直接扫目录（仅 job 自身 out）
                     if not video:
                         out_dir = j.get('out')
                         if out_dir:
-                            mp4s = sorted(Path(out_dir).glob('*.mp4'))
-                            if mp4s:
-                                video = '/' + str(mp4s[0].relative_to(ROOT)).replace('\\', '/')
-                                j['video'] = video
+                            try:
+                                od = Path(out_dir).resolve()
+                                if _is_under(od, OUT_BASE):
+                                    mp4s = sorted(od.glob('*.mp4'))
+                                    if mp4s:
+                                        video = '/' + str(mp4s[0].relative_to(ROOT)).replace('\\', '/')
+                                        j['video'] = video
+                            except Exception:
+                                pass
                     resp['video'] = video
                     j['progress'] = j.get('progress') or '完成'
             self._json(resp)
@@ -1067,13 +1220,28 @@ class H(SimpleHTTPRequestHandler):
             self._handle_templates_get(p)
         elif p.path.startswith('/rendered/'):
             fp = (ROOT / p.path.lstrip('/')).resolve()
-            # 安全路径检查：必须严格在 ROOT 内（防目录穿越）
+            # 仅允许成品输出：rendered/webui/<job>/ 下的视频与字幕
+            # 禁止：源码穿越、uploads/templates 媒体与 JSON、任意日志
+            if not _is_under(fp, OUT_BASE):
+                self._json({'error': 'forbidden'}, 403); return
+            # 排除 uploads / templates
             try:
-                fp.relative_to(ROOT.resolve())
+                rel = fp.relative_to(OUT_BASE.resolve())
             except ValueError:
                 self._json({'error': 'forbidden'}, 403); return
-            if fp.exists():
-                self._file(fp, 'video/mp4' if fp.suffix == '.mp4' else 'text/plain')
+            parts = rel.parts
+            if not parts or parts[0] in ('uploads', 'templates'):
+                self._json({'error': 'forbidden'}, 403); return
+            if fp.exists() and fp.is_file():
+                ext = fp.suffix.lower()
+                if ext == '.mp4':
+                    ct = 'video/mp4'
+                elif ext == '.srt':
+                    ct = 'text/plain; charset=utf-8'
+                else:
+                    # 不暴露 _stderr.log / manifest.json 等内部文件
+                    self._json({'error': 'forbidden'}, 403); return
+                self._file(fp, ct)
             else:
                 self._json({'error': 'not found'}, 404)
         else:
@@ -1118,38 +1286,58 @@ class H(SimpleHTTPRequestHandler):
             else:
                 if len(raw) > MAX_IMAGE_SIZE:
                     self._json({'error': f'图片超过 {MAX_IMAGE_SIZE // 1024 // 1024}MB 限制'}, 413); return
-            # sanitize filename: replace non-ASCII chars to avoid path/encoding issues
-            safe_name = re.sub(r'[^\x20-\x7e]', '_', name)
-            fp = UPLOAD_DIR / f'{uuid.uuid4().hex}_{safe_name}'
+            # sanitize filename: 仅保留 basename，去掉路径分隔与穿越
+            safe_name = _sanitize_upload_name(name)
+            fp = (UPLOAD_DIR / f'{uuid.uuid4().hex}_{safe_name}').resolve()
+            if not _is_under(fp, UPLOAD_DIR):
+                self._json({'error': '非法文件名'}, 400); return
             fp.write_bytes(raw)
-            self._json({'path': str(fp.resolve())})
+            self._json({'path': str(fp)})
 
         elif p.path == '/api/render':
             data = json.loads(body)
             m = data.get('manifest', {})
+            if not isinstance(m, dict):
+                self._json({'error': 'manifest 必须是对象'}, 400); return
+            scenes = m.get('scenes')
+            if not isinstance(scenes, list) or not scenes:
+                self._json({'error': 'manifest.scenes 不能为空'}, 400); return
+            # 场景媒体必须在白名单目录内（防任意本地文件读入成片）
+            for i, scene in enumerate(scenes):
+                if not isinstance(scene, dict):
+                    self._json({'error': f'scenes[{i}] 必须是对象'}, 400); return
+                img = scene.get('image', '')
+                if not img:
+                    self._json({'error': f'scenes[{i}] 缺少 image'}, 400); return
+                resolved = _resolve_media_path(img)
+                if not resolved:
+                    self._json({'error': f'非法媒体路径: {img}'}, 400); return
+                scene['image'] = str(resolved)
             bgm = data.get('bgm')
+            if bgm:
+                bp = _resolve_media_path(bgm)
+                if not bp:
+                    self._json({'error': f'非法 BGM 路径: {bgm}'}, 400); return
+                bgm = str(bp)
             tc = data.get('title_card')
             ec = data.get('end_card')
-            rid = data.get('render_id')
-            # 防止客户端 render_id 碰撞：如已存在则重新生成
-            if rid and rid in JOBS:
-                rid = str(uuid.uuid4())
-            else:
-                rid = rid or str(uuid.uuid4())
-            out = OUT_BASE / rid; out.mkdir(parents=True, exist_ok=True)
+            rid = _sanitize_render_id(data.get('render_id'))
+            # 防止客户端 render_id 碰撞 / 非法：重生 UUID
+            if not rid or rid in JOBS:
+                rid = uuid.uuid4().hex
+            out = _job_out_dir(rid)
+            if out is None:
+                self._json({'error': '非法 render_id'}, 400); return
+            out.mkdir(parents=True, exist_ok=True)
             mp = out / 'manifest.json'
             mp.write_text(json.dumps(m, ensure_ascii=False, indent=2), encoding='utf-8')
             # 构建命令行参数列表（统一方式，兼容源码和 exe 模式）
             cmd = [str(SCRIPT), str(mp), '--output-dir', str(out)]
             if bgm:
-                bgm_path = Path(bgm)
-                if not bgm_path.is_absolute():
-                    bgm_path = UPLOAD_DIR / bgm_path
-                if bgm_path.exists():
-                    cmd += ['--bgm', str(bgm_path.resolve())]
-                    bvol = m.get('bgm_volume')
-                    if bvol is not None and isinstance(bvol, (int, float)) and 0.0 <= bvol <= 1.0:
-                        cmd += ['--bgm-volume', str(bvol)]
+                cmd += ['--bgm', bgm]
+                bvol = m.get('bgm_volume')
+                if bvol is not None and isinstance(bvol, (int, float)) and 0.0 <= bvol <= 1.0:
+                    cmd += ['--bgm-volume', str(bvol)]
             if tc:
                 # write non-ASCII title card text to temp file to avoid cmdline encoding issues
                 if any(ord(c) > 127 for c in tc):
@@ -1171,7 +1359,17 @@ class H(SimpleHTTPRequestHandler):
                 ecd = data.get('end_card_duration')
                 if ecd and isinstance(ecd, (int, float)) and ecd >= 1.0:
                     cmd += ['--end-card-duration', str(ecd)]
-            if not m.get('burn_subtitles', True):
+            # 与 video_auto.parse_boolish 对齐：字符串 "false"/"0" 应关闭烧录
+            try:
+                import video_auto as _va_bs
+                _burn = _va_bs.parse_boolish(m.get('burn_subtitles', True), default=True)
+            except Exception:
+                _bs = m.get('burn_subtitles', True)
+                if isinstance(_bs, str):
+                    _burn = _bs.strip().lower() not in ('0', 'false', 'no', 'off', 'n', '')
+                else:
+                    _burn = bool(_bs) if _bs is not None else True
+            if not _burn:
                 cmd += ['--no-burn']
             # 字幕样式
             ss = m.get('subtitle_style')
@@ -1212,38 +1410,79 @@ class H(SimpleHTTPRequestHandler):
                 if not j:
                     return
                 with RENDER_LOCK:
-                    if j.get('done'):
-                        return  # 已被取消
+                    if j.get('done') or j.get('cancelled'):
+                        return  # 已被取消 / 超时
                     # 在获取锁之后才重置取消令牌，避免排队期间被前一个任务的取消污染
                     import video_auto as _va
                     _va.CancelToken.reset()
+                    # 再检一次：reset 与 main 之间的 cancel 窗口
+                    if j.get('done') or j.get('cancelled') or (
+                        j.get('cancel_event') and j['cancel_event'].is_set()
+                    ):
+                        _mark_job_cancelled(j)
+                        return
+                    j['_started'] = True
+                    _set_active_render(rid)
+                    # 若在 set active 瞬间被取消，立刻武装 token
+                    if j.get('cancelled') or (j.get('cancel_event') and j['cancel_event'].is_set()):
+                        _va.CancelToken.set_cancelled()
                     try:
                         os.chdir(str(ROOT))
                         sys.argv = cmd
                         # 只设 progress_file 环境变量，不污染全局
                         os.environ['NARRAVID_PROGRESS_FILE'] = progress_env_val
                         _va.main()
-                        # 成功完成
-                        mp4s = sorted(out.glob('*.mp4'))
-                        if mp4s:
-                            j['video'] = '/' + str(mp4s[0].relative_to(ROOT)).replace('\\', '/')
-                        j['progress'] = '完成'
+                        # 若取消/超时已抢先标记，不要把状态覆盖成“完成”
+                        if j.get('cancelled') or j.get('error'):
+                            prior = (j.get('error') or '').strip()
+                            if prior.startswith('渲染超时'):
+                                # 超时诊断优先于取消文案
+                                j['progress'] = j.get('progress') or '超时（渲染卡死）'
+                            elif j.get('cancelled') and not prior:
+                                j['error'] = '已取消'
+                                j['progress'] = '已取消'
+                            elif j.get('cancelled'):
+                                # 有其它 prior error 时保留 error，进度标取消
+                                j['progress'] = j.get('progress') or '已取消'
+                        else:
+                            mp4s = sorted(out.glob('*.mp4'))
+                            if mp4s:
+                                j['video'] = '/' + str(mp4s[0].relative_to(ROOT)).replace('\\', '/')
+                            j['progress'] = '完成'
                     except Exception as e:
                         import traceback
                         tb = traceback.format_exc()
                         err_file = out / '_stderr.log'
-                        err_file.write_text(tb, encoding='utf-8', errors='ignore')
+                        try:
+                            out.mkdir(parents=True, exist_ok=True)
+                            err_file.write_text(tb, encoding='utf-8', errors='ignore')
+                        except Exception:
+                            pass
                         msg = str(e)
-                        # 用户取消不记为普通失败
-                        if '取消' in msg or j.get('cancelled'):
+                        prior = (j.get('error') or '').strip()
+                        # 超时诊断优先：mon 已写「渲染超时」时，即使随后用户点取消也不要盖成「已取消」
+                        if prior.startswith('渲染超时'):
+                            j['progress'] = j.get('progress') or '超时（渲染卡死）'
+                            # 保留 prior error；cancelled 标志可并存，供 UI 区分
+                        elif j.get('cancelled') or _looks_like_cancel(msg):
                             j['cancelled'] = True
-                            j['error'] = '已取消'
+                            # 保留已有非空 error（如其它 mon 诊断），否则记已取消
+                            j['error'] = prior or '已取消'
                             j['progress'] = '已取消'
+                        elif prior:
+                            # 已有 error 且非取消：勿用 CancelToken 文案覆盖
+                            j['progress'] = j.get('progress') or f'失败: {e}'[:200]
                         else:
                             j['error'] = msg[-500:]
                             j['progress'] = f'失败: {e}'[:200]
                     finally:
                         # 恢复原始状态
+                        if _get_active_render() == rid:
+                            _set_active_render(None)
+                        try:
+                            _va.CancelToken.reset()
+                        except Exception:
+                            pass
                         sys.argv = orig_argv
                         os.chdir(orig_cwd)
                         # 恢复 progress_file 环境变量
@@ -1262,6 +1501,11 @@ class H(SimpleHTTPRequestHandler):
                     time.sleep(2)
                     if j.get('done'):
                         break
+                    # 仍在排队（未持有 RENDER_LOCK）时不计超时，避免“排队 3 分钟被误判卡死”
+                    if _is_waiting_for_lock(rid, j):
+                        stall_count = 0
+                        last_progress = ''
+                        continue
                     current_progress = ''
                     pf = j.get('progress_file')
                     if pf and Path(pf).exists():
@@ -1279,20 +1523,13 @@ class H(SimpleHTTPRequestHandler):
                         j['error'] = '渲染超时：180 秒无进度更新'
                         j['progress'] = '超时（渲染卡死）'
                         j['done'] = True
-                        # 通知渲染线程中断
-                        try:
-                            import video_auto as _va
-                            _va.CancelToken.set_cancelled()
-                        except Exception:
-                            pass
+                        # 仅打断当前真正在跑的任务；排队中的 job 超时不应误杀持锁渲染
+                        _signal_cancel_token_if_active(rid)
                         if j.get('cancel_event'):
                             j['cancel_event'].set()
                         return
                     if j.get('cancel_event') and j['cancel_event'].is_set():
-                        j['cancelled'] = True
-                        j['progress'] = '已取消'
-                        j['error'] = j.get('error') or '已取消'
-                        j['done'] = True
+                        _mark_job_cancelled(j)
                         return
 
             # 启动渲染线程和监控线程
@@ -1302,8 +1539,8 @@ class H(SimpleHTTPRequestHandler):
             def cleanup_job():
                 time.sleep(300)
                 j = JOBS.get(rid)
-                if j and not j.get('done'):
-                    # 任务仍在运行，推迟清理
+                # done 可能被 cancel/stall 提前置位，但线程仍可能在跑；active 时不清理
+                if j and (not j.get('done') or _get_active_render() == rid):
                     threading.Thread(target=cleanup_job, daemon=True).start()
                     return
                 JOBS.pop(rid, None)
@@ -1317,28 +1554,43 @@ class H(SimpleHTTPRequestHandler):
                 # 先设置取消信号，再标记 done，避免 mon() 提前退出错过取消
                 if j.get('cancel_event'):
                     j['cancel_event'].set()
-                try:
-                    import video_auto as _va
-                    _va.CancelToken.set_cancelled()
-                except Exception:
-                    pass
-                j['cancelled'] = True
-                j['progress'] = '已取消'
-                j['error'] = j.get('error') or '已取消'
-                j['done'] = True
+                # 只取消“当前正在执行”的 job 的全局 token；排队中的 job 仅靠 done 跳过
+                _signal_cancel_token_if_active(rid)
+                _mark_job_cancelled(j)
             self._json({'status': 'ok'})
 
         elif p.path == '/api/clean':
             cleaned = 0
+            # 进行中 / 排队中的任务目录不可删
+            protected = set()
+            for j in list(JOBS.values()):
+                outp = j.get('out') if isinstance(j, dict) else None
+                if outp:
+                    try:
+                        protected.add(str(Path(outp).resolve()))
+                    except Exception:
+                        pass
             # 按修改时间排序，保留最近 5 次
             dirs = sorted(
                 [d for d in OUT_BASE.iterdir() if d.is_dir() and d.name not in ('uploads', 'templates')],
                 key=lambda d: d.stat().st_mtime, reverse=True
             )
-            for d in dirs[5:]:
+            keep = set()
+            for d in dirs[:5]:
+                try:
+                    keep.add(str(d.resolve()))
+                except Exception:
+                    pass
+            for d in dirs:
+                try:
+                    key = str(d.resolve())
+                except Exception:
+                    continue
+                if key in keep or key in protected:
+                    continue
                 shutil.rmtree(d, ignore_errors=True)
                 cleaned += 1
-            self._json({'message': f'已清理 {cleaned} 个旧渲染，保留最近 5 个', 'cleaned': cleaned})
+            self._json({'message': f'已清理 {cleaned} 个旧渲染，保留最近 5 个及进行中任务', 'cleaned': cleaned})
 
         elif p.path == '/api/templates':
             # POST = save template
@@ -1372,31 +1624,55 @@ class H(SimpleHTTPRequestHandler):
                 manifest_copy['card_duration'] = data.get('card_duration')
             if data.get('end_card_duration') is not None and 'end_card_duration' not in manifest_copy:
                 manifest_copy['end_card_duration'] = data.get('end_card_duration')
+            export_roots = [UPLOAD_DIR.resolve(), (ROOT / 'examples-assets').resolve(), OUT_BASE.resolve()]
+
+            def _exportable(path: Path) -> bool:
+                try:
+                    rp = path.resolve()
+                except Exception:
+                    return False
+                return rp.exists() and rp.is_file() and _is_under_any(rp, export_roots)
+
             for i, scene in enumerate(manifest_copy.get('scenes', [])):
+                if not isinstance(scene, dict):
+                    self._json({'error': f'scenes[{i}] 必须是对象'}, 400); return
                 img = scene.get('image', '')
                 if not img:
-                    continue
+                    self._json({'error': f'scenes[{i}] 缺少 image，无法导出'}, 400); return
                 img_path = Path(img)
                 if not img_path.is_absolute():
                     img_path = UPLOAD_DIR / img_path
-                img_path = img_path.resolve()
-                if img_path.exists() and str(img_path) not in collected:
+                try:
+                    img_path = img_path.resolve()
+                except Exception:
+                    self._json({'error': f'无法解析媒体路径: {img}'}, 400); return
+                if not _exportable(img_path):
+                    # 禁止把本机绝对路径写进 zip manifest（路径泄漏 + 坏导入）
+                    self._json({
+                        'error': f'无法导出：场景 {i} 媒体不在允许目录（uploads/examples-assets/输出）: {Path(img).name}'
+                    }, 400); return
+                if str(img_path) not in collected:
                     ext = img_path.suffix.lower()
                     zname = f'assets/scene_{i:03d}{ext}'
                     collected[str(img_path)] = zname
-                if str(img_path) in collected:
-                    scene['image'] = collected[str(img_path)]
+                scene['image'] = collected[str(img_path)]
             # BGM
             if bgm:
                 bgm_path = Path(bgm)
                 if not bgm_path.is_absolute():
                     bgm_path = UPLOAD_DIR / bgm_path
-                bgm_path = bgm_path.resolve()
-                if bgm_path.exists():
-                    zname = f'assets/bgm{bgm_path.suffix}'
-                    collected[str(bgm_path)] = zname
-                    manifest_copy['bgm'] = zname
-            # 写入 manifest
+                try:
+                    bgm_path = bgm_path.resolve()
+                except Exception:
+                    self._json({'error': f'无法解析 BGM 路径: {bgm}'}, 400); return
+                if not _exportable(bgm_path):
+                    self._json({
+                        'error': f'无法导出：BGM 不在允许目录: {Path(bgm).name}'
+                    }, 400); return
+                zname = f'assets/bgm{bgm_path.suffix}'
+                collected[str(bgm_path)] = zname
+                manifest_copy['bgm'] = zname
+            # 写入 manifest（仅含 zip 内相对路径，无宿主绝对路径）
             zf.writestr('manifest.json', json.dumps(manifest_copy, ensure_ascii=False, indent=2))
             # 写入所有媒体文件
             for abs_path, zname in collected.items():
@@ -1435,12 +1711,37 @@ class H(SimpleHTTPRequestHandler):
                         member_path.relative_to(project_dir.resolve())
                     except ValueError:
                         self._json({'error': f'zip 包含非法路径: {member}'}, 400); return
-                    # 检查解压后总大小
+                    # 检查解压后总大小（header 声明 + 实际写出字节双保险）
                     total_size += zf.getinfo(member).file_size
                     if total_size > max_extract:
                         self._json({'error': 'zip 解压后超过 500MB 限制'}, 400); return
                     safe_members.append(member)
-                zf.extractall(project_dir, members=safe_members)
+                # 流式解压并累计实际写入字节，防止 header 低报
+                written = 0
+                for member in safe_members:
+                    info = zf.getinfo(member)
+                    # 目录项
+                    if member.endswith('/') or info.is_dir():
+                        (project_dir / member).mkdir(parents=True, exist_ok=True)
+                        continue
+                    target = (project_dir / member).resolve()
+                    if not _is_under(target, project_dir):
+                        self._json({'error': f'zip 包含非法路径: {member}'}, 400); return
+                    target.parent.mkdir(parents=True, exist_ok=True)
+                    with zf.open(info, 'r') as src, open(target, 'wb') as dst:
+                        while True:
+                            chunk = src.read(1024 * 1024)
+                            if not chunk:
+                                break
+                            written += len(chunk)
+                            if written > max_extract:
+                                try:
+                                    dst.close()
+                                    target.unlink(missing_ok=True)
+                                except Exception:
+                                    pass
+                                self._json({'error': 'zip 解压后超过 500MB 限制'}, 400); return
+                            dst.write(chunk)
             # 读取 manifest 并修正路径
             mp = project_dir / 'manifest.json'
             if not mp.exists():
@@ -1452,17 +1753,48 @@ class H(SimpleHTTPRequestHandler):
             scenes = manifest.get('scenes')
             if not isinstance(scenes, list):
                 self._json({'error': 'manifest.scenes 不是数组'}, 400); return
+            proj_root = project_dir.resolve()
             for scene in scenes:
+                if not isinstance(scene, dict):
+                    self._json({'error': 'manifest.scenes 项必须是对象'}, 400); return
                 img = scene.get('image', '')
-                if img and not Path(img).is_absolute():
-                    scene['image'] = str((project_dir / img).resolve())
+                if not img:
+                    continue
+                img_path = Path(img)
+                if not img_path.is_absolute():
+                    img_path = (project_dir / img_path).resolve()
+                else:
+                    img_path = img_path.resolve()
+                if not _is_under(img_path, proj_root):
+                    self._json({'error': f'非法媒体路径: {img}'}, 400); return
+                scene['image'] = str(img_path)
             bgm_val = manifest.pop('bgm', None)
-            if bgm_val and not Path(bgm_val).is_absolute():
-                bgm_val = str((project_dir / bgm_val).resolve())
+            if bgm_val:
+                bgm_path = Path(bgm_val)
+                if not bgm_path.is_absolute():
+                    bgm_path = (project_dir / bgm_path).resolve()
+                else:
+                    bgm_path = bgm_path.resolve()
+                if not _is_under(bgm_path, proj_root):
+                    self._json({'error': f'非法 BGM 路径: {bgm_val}'}, 400); return
+                bgm_val = str(bgm_path)
             self._json({'manifest': manifest, 'bgm': bgm_val})
 
         else:
             self._json({'error': 'not found'}, 404)
+
+    def _template_path(self, tid):
+        """Resolve template id to a path strictly under TEMPLATE_DIR."""
+        tid = (tid or '').strip()
+        if not tid or '/' in tid or '\\' in tid or tid in ('.', '..') or '..' in tid:
+            return None
+        # 仅允许简单文件名，避免模板 ID 路径穿越
+        if not re.fullmatch(r'[\w.-]{1,64}', tid):
+            return None
+        tp = (TEMPLATE_DIR / f'{tid}.json').resolve()
+        if not _is_under(tp, TEMPLATE_DIR):
+            return None
+        return tp
 
     def _handle_templates_get(self, p):
         if p.path == '/api/templates':
@@ -1479,8 +1811,8 @@ class H(SimpleHTTPRequestHandler):
         else:
             # 单个模板 GET /api/templates/<id>
             tid = p.path.split('/')[-1]
-            tp = TEMPLATE_DIR / f'{tid}.json'
-            if tp.exists():
+            tp = self._template_path(tid)
+            if tp and tp.exists():
                 self._json(json.loads(tp.read_text(encoding='utf-8')))
             else:
                 self._json({'error': 'not found'}, 404)
@@ -1491,8 +1823,8 @@ class H(SimpleHTTPRequestHandler):
         body = self.rfile.read(length) if length else b''
         if p.path.startswith('/api/templates/'):
             tid = p.path.split('/')[-1]
-            tp = TEMPLATE_DIR / f'{tid}.json'
-            if not tp.exists():
+            tp = self._template_path(tid)
+            if not tp or not tp.exists():
                 self._json({'error': 'not found'}, 404); return
             data = json.loads(body) if body else {}
             tpl = json.loads(tp.read_text(encoding='utf-8'))
@@ -1509,8 +1841,8 @@ class H(SimpleHTTPRequestHandler):
         p = urllib.parse.urlparse(self.path)
         if p.path.startswith('/api/templates/'):
             tid = p.path.split('/')[-1]
-            tp = TEMPLATE_DIR / f'{tid}.json'
-            if tp.exists():
+            tp = self._template_path(tid)
+            if tp and tp.exists():
                 tp.unlink()
                 self._json({'status': 'ok'})
             else:

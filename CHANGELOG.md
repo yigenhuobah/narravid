@@ -5,6 +5,34 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [v1.9.0] - 2026-07-13
+
+### Fixed — 路径安全 / 取消语义 / 失败诊断
+
+- **`render_id` 路径穿越**：客户端 `render_id` 仅允许简单 token，输出目录强制落在 `rendered/webui/` 下
+- **`/api/render` 任意本地媒体读入**：scene / BGM 路径白名单（uploads、examples-assets、输出树）
+- **`/rendered` 过宽暴露**：仅服务 job 目录下 `.mp4` / `.srt`，禁止 uploads、templates、日志与源码穿越
+- **工程导出泄漏本机绝对路径**：非白名单媒体直接 400，成功导出的 manifest 仅含 zip 内相对路径
+- **zip 导入炸弹 / 路径穿越**：流式解压并按实际写入字节限制 500MB；成员路径严格限制在工程目录
+- **取消后误报成功**：前端 `userCancelled` 硬闸；status 终态不被 progress 文件覆盖
+- **超时诊断被取消文案盖掉**：`渲染超时…` 优先于「已取消」（后端 success/except 与前端 poll）
+- **并行场景失败伪装成用户取消**：fail-fast 使用 `CancelToken.set_aborted()`，与用户取消区分
+- **取消无法打断 ffmpeg**：`run()` 改为可注册的 Popen，取消时 `taskkill /T`（Windows）结束子进程树
+- **排队任务误触发全局取消 / 超时**：`ACTIVE_RENDER_ID` 仅取消真正在跑的任务；排队不计 stall
+- **`burn_subtitles: "false"` 仍烧录**：CLI / WebUI 统一 `parse_boolish`
+- **`hold_sec` 滤镜分叉**：复用 `process_audio`，并以实际时长对齐 `scene_duration`
+- **模板 ID / 上传文件名路径问题**：模板 ID 消毒；上传仅 basename 且限制在 uploads 内
+
+### Added
+
+- **分层 max 测试门禁**（stdlib，无 pytest）：`run_tests.py` + `tests/`（unit / security / cancel / live / pipeline）
+- **`test_regressions.py`**：本轮安全与取消回归用例
+
+### Changed
+
+- `end_card_duration` ≤0 明确回退为与标题页同长（`resolve_positive_duration`）
+- `smart_comma` 支持更多假值字符串（`n` / `disabled` 等）
+
 ## [v1.8.0] - 2026-07-12
 
 ### Fixed — 全量代码审议修复

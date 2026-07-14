@@ -52,7 +52,51 @@ from webui_ui import HTML
 
 SCRIPT = ROOT / 'video_auto.py'
 
-class H(SimpleHTTPRequestHandler):
+def _write_b64_to_file(b64: str, dest: Path, max_bytes: int) -> int:
+    """Decode base64 in chunks to dest; enforce max_bytes. Returns size written."""
+    if not b64:
+        raise ValueError('empty base64')
+    if len(b64) > (max_bytes * 4 // 3) + 8:
+        raise ValueError('payload too large')
+    cleaned = ''.join(b64.split())
+    if len(cleaned) > (max_bytes * 4 // 3) + 8:
+        raise ValueError('payload too large')
+    step = 65536
+    written = 0
+    buf = ''
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    with open(dest, 'wb') as out:
+        for i in range(0, len(cleaned), step):
+            chunk = cleaned[i:i + step]
+            data = buf + chunk
+            take = len(data) - (len(data) % 4)
+            if take <= 0:
+                buf = data
+                continue
+            piece, buf = data[:take], data[take:]
+            try:
+                raw = base64.b64decode(piece, validate=False)
+            except Exception as e:
+                raise ValueError('base64 解码失败') from e
+            written += len(raw)
+            if written > max_bytes:
+                raise ValueError('file too large')
+            out.write(raw)
+        if buf:
+            pad = (-len(buf)) % 4
+            try:
+                raw = base64.b64decode(buf + ('=' * pad), validate=False)
+            except Exception as e:
+                raise ValueError('base64 解码失败') from e
+            written += len(raw)
+            if written > max_bytes:
+                raise ValueError('file too large')
+            out.write(raw)
+    return written
+
+
+
+class WebUIHandler(SimpleHTTPRequestHandler):
     def do_HEAD(self):
         """Same access policy as GET — never fall through to SimpleHTTPRequestHandler."""
         # Reuse GET handlers which call _file/_json; for HEAD only headers matter.
@@ -306,30 +350,34 @@ class H(SimpleHTTPRequestHandler):
             name = data.get('name', 'image.png')
             b64 = data.get('data', '')
             kind = data.get('kind', 'image')
-            try:
-                raw = base64.b64decode(b64)
-            except Exception:
-                self._json({'error': 'base64 解码失败'}, 400); return
-            # 大小校验：按类型区分图片 / 视频 / BGM
             ext = Path(name).suffix.lower()
             video_exts = {'.mp4', '.mov', '.mkv', '.avi', '.webm', '.flv'}
             is_video = kind == 'video' or ext in video_exts
             if kind == 'bgm' or ext in {'.mp3', '.wav', '.aac', '.m4a', '.flac', '.ogg'}:
-                if len(raw) > MAX_BGM_SIZE:
-                    self._json({'error': f'BGM 文件超过 {MAX_BGM_SIZE // 1024 // 1024}MB 限制'}, 413); return
+                max_bytes = MAX_BGM_SIZE
+                kind_label = 'BGM'
             elif is_video:
-                if len(raw) > MAX_VIDEO_SIZE:
-                    self._json({'error': f'视频超过 {MAX_VIDEO_SIZE // 1024 // 1024}MB 限制'}, 413); return
+                max_bytes = MAX_VIDEO_SIZE
+                kind_label = '视频'
             else:
-                if len(raw) > MAX_IMAGE_SIZE:
-                    self._json({'error': f'图片超过 {MAX_IMAGE_SIZE // 1024 // 1024}MB 限制'}, 413); return
-            # sanitize filename: 仅保留 basename，去掉路径分隔与穿越
+                max_bytes = MAX_IMAGE_SIZE
+                kind_label = '图片'
             safe_name = _sanitize_upload_name(name)
             fp = (UPLOAD_DIR / f'{uuid.uuid4().hex}_{safe_name}').resolve()
             if not _is_under(fp, UPLOAD_DIR):
                 self._json({'error': '非法文件名'}, 400); return
-            fp.write_bytes(raw)
-            self._json({'path': str(fp)})
+            try:
+                size = _write_b64_to_file(b64 if isinstance(b64, str) else '', fp, max_bytes)
+            except ValueError as e:
+                try:
+                    fp.unlink(missing_ok=True)
+                except Exception:
+                    pass
+                msg = str(e)
+                if 'too large' in msg or 'payload too large' in msg:
+                    self._json({'error': f'{kind_label}超过 {max_bytes // 1024 // 1024}MB 限制'}, 413); return
+                self._json({'error': 'base64 解码失败'}, 400); return
+            self._json({'path': str(fp), 'size': size})
 
         elif p.path == '/api/render':
             data = json.loads(body)
@@ -933,6 +981,10 @@ class H(SimpleHTTPRequestHandler):
     def log_message(self, fmt, *args): pass
 
 
+# Backward-compatible alias (tests use webui.H)
+H = WebUIHandler
+
+
 def main():
     ap = argparse.ArgumentParser(description='narravid Web UI')
     ap.add_argument('--port', type=int, default=int(os.environ.get('NARRAVID_PORT', '5000') or 5000))
@@ -945,7 +997,7 @@ def main():
     for d in [OUT_BASE, UPLOAD_DIR, TEMPLATE_DIR]:
         d.mkdir(parents=True, exist_ok=True)
     # ThreadingHTTPServer：上传/状态轮询/导出互不阻塞；渲染仍由 RENDER_LOCK 串行
-    srv = ThreadingHTTPServer((args.host, args.port), H)
+    srv = ThreadingHTTPServer((args.host, args.port), WebUIHandler)
     display_host = '127.0.0.1' if args.host in ('0.0.0.0', '::') else args.host
     url = f'http://{display_host}:{args.port}'
     print(f'narravid Web UI: {url}')

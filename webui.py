@@ -21,13 +21,11 @@ from http.server import HTTPServer, SimpleHTTPRequestHandler, ThreadingHTTPServe
 from pathlib import Path
 
 from webui_jobs import (  # re-export for tests / external importers
-    ACTIVE_RENDER_ID,
     JOBS,
     MAX_BGM_SIZE,
     MAX_IMAGE_SIZE,
     MAX_UPLOAD_SIZE,
     MAX_VIDEO_SIZE,
-    MEDIA_ALLOWED_DIRS,
     OUT_BASE,
     RENDER_LOCK,
     ROOT,
@@ -321,6 +319,11 @@ class H(SimpleHTTPRequestHandler):
                 self._json({'error': '非法 render_id'}, 400); return
             out.mkdir(parents=True, exist_ok=True)
             mp = out / 'manifest.json'
+            try:
+                import video_auto as _va_norm
+                m = _va_norm.normalize_manifest(m)
+            except Exception as e:
+                self._json({'error': f'manifest 无效: {e}'}, 400); return
             mp.write_text(json.dumps(m, ensure_ascii=False, indent=2), encoding='utf-8')
             # 构建命令行参数列表（统一方式，兼容源码和 exe 模式）
             cmd = [str(SCRIPT), str(mp), '--output-dir', str(out)]

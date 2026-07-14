@@ -355,6 +355,14 @@ body{font-family:"Microsoft YaHei","PingFang SC","Noto Sans SC",sans-serif;backg
 <script>
 let scenes=[],rid=null,tmr=null,uploading=0,bgmList=[],currentVideo='',ttsEngine='edge';
 const byId=id=>document.getElementById(id);
+/* hold_sec wire field; legacy templates may still send hold. Do not use || (0 is valid). */
+function sceneHoldSec(s){
+  if(!s)return 0;
+  let v=(s.hold_sec!==undefined&&s.hold_sec!==null&&s.hold_sec!=='')?s.hold_sec:s.hold;
+  let n=parseFloat(v);
+  return (isFinite(n)&&n>0)?n:0;
+}
+
 const MAX_IMG=20*1024*1024, MAX_BGM=50*1024*1024;
 
 /* ── Toast ── */
@@ -698,7 +706,7 @@ async function render(){
     bgm_volume:parseFloat(byId('bvol').value),card_duration:parseFloat(byId('tcd').value),
     end_card_duration:parseFloat(byId('ecd').value),
     subtitle_style:subStyleStr,
-    scenes:valid.map(s=>({image:s.image,text:s.text.trim(),hold_sec:s.hold_sec||0}))};
+    scenes:valid.map(s=>({image:s.image,text:s.text.trim(),hold_sec:sceneHoldSec(s)}))};
   let body={manifest:m,bgm:bgm,
     title_card:byId('tc').value.trim()||null,
     end_card:byId('ec').value.trim()||null,
@@ -815,7 +823,7 @@ async function saveTemplate(){
   let name=byId('tplName')?.value?.trim()||('模板 '+(new Date().toLocaleString('zh-CN',{month:'numeric',day:'numeric',hour:'2-digit',minute:'2-digit'})));
   // 实时读 textarea
   document.querySelectorAll('.scene textarea').forEach((ta,i)=>{if(scenes[i])scenes[i].text=ta.value});
-  let data={name,scenes:scenes.filter(s=>s.image).map(s=>({text:s.text,image:s.image,hold_sec:s.hold_sec||0})),
+  let data={name,scenes:scenes.filter(s=>s.image).map(s=>({text:s.text,image:s.image,hold_sec:sceneHoldSec(s)})),
     voice:byId('v').value,speed:byId('sp').value,burn:byId('bs').checked,
     resolution:byId('res').value,title_card:byId('tc').value,end_card:byId('ec').value,
     card_duration:byId('tcd').value,end_card_duration:byId('ecd').value,
@@ -827,7 +835,7 @@ async function saveTemplate(){
 }
 async function loadTemplate(id){
   let t=await fetch('/api/templates/'+id).then(r=>r.json());
-  if(t.scenes){scenes=t.scenes.map(s=>({image:s.image||'',text:s.text||'',hold_sec:s.hold_sec||s.hold||0}));paintScenes()}
+  if(t.scenes){scenes=t.scenes.map(s=>({image:s.image||'',text:s.text||'',hold_sec:sceneHoldSec(s)}));paintScenes()}
   if(t.voice)byId('v').value=t.voice;
   if(t.speed)byId('sp').value=t.speed,byId('sv').textContent=parseFloat(t.speed).toFixed(2)+'x';
   if(t.burn!==undefined)byId('bs').checked=t.burn;
@@ -895,7 +903,7 @@ async function exportProject(){
     title_card:byId('tc').value.trim()||'',
     end_card:byId('ec').value.trim()||'',
     subtitle_style:buildSubStyleStr(),
-    scenes:valid.map(s=>({image:s.image,text:s.text.trim(),hold_sec:s.hold_sec||0}))};
+    scenes:valid.map(s=>({image:s.image,text:s.text.trim(),hold_sec:sceneHoldSec(s)}))};
   let bgm=byId('bgmSel').value||null;
   toast('正在打包...','info');
   try{
@@ -929,7 +937,7 @@ async function importProject(){
       if(!resp.ok||d.error){toast(d.error||('导入失败 HTTP '+resp.status),'error');return}
       // 加载 manifest 到 UI
       let m=d.manifest;
-      scenes=m.scenes.map(s=>({image:s.image,text:s.text||'',hold_sec:s.hold_sec||s.hold||0}));
+      scenes=m.scenes.map(s=>({image:s.image,text:s.text||'',hold_sec:sceneHoldSec(s)}));
       if(m.tts_engine)ttsEngine=m.tts_engine;
       if(m.voice)byId('v').value=m.voice;
       if(m.speech_speed!==undefined&&m.speech_speed!==null&&m.speech_speed!==''){byId('sp').value=m.speech_speed;byId('sv').textContent=parseFloat(m.speech_speed).toFixed(2)+'x'}

@@ -368,14 +368,37 @@ class ManifestDict(TypedDict, total=False):
 
 
 def scene_hold_sec(scene: dict) -> float:
-    """UI may historically send hold; pipeline wire format is hold_sec."""
-    if scene is None:
+    """UI may historically send hold; pipeline wire format is hold_sec.
+
+    Explicit hold_sec wins when present and numeric (including 0). Empty/invalid
+    hold_sec falls back to legacy hold. Non-finite values are rejected as 0.
+    """
+    if not isinstance(scene, dict):
         return 0.0
-    raw = scene.get('hold_sec', scene.get('hold', 0.0))
-    try:
-        return max(0.0, float(raw or 0.0))
-    except (TypeError, ValueError):
-        return 0.0
+
+    def _parse(raw):
+        if raw is None or raw is False:
+            return None
+        if isinstance(raw, str) and raw.strip() == '':
+            return None
+        try:
+            n = float(raw)
+        except (TypeError, ValueError):
+            return None
+        if n != n or n in (float('inf'), float('-inf')):  # NaN/inf
+            return None
+        return max(0.0, min(n, 3600.0))  # clamp to 1h
+
+    if 'hold_sec' in scene:
+        parsed = _parse(scene.get('hold_sec'))
+        if parsed is not None:
+            return parsed
+        # present but empty/invalid → try legacy hold
+    if 'hold' in scene:
+        parsed = _parse(scene.get('hold'))
+        if parsed is not None:
+            return parsed
+    return 0.0
 
 
 def normalize_scene(scene: dict) -> dict:
@@ -383,12 +406,16 @@ def normalize_scene(scene: dict) -> dict:
     if not isinstance(scene, dict):
         raise ValueError('scene 必须是对象')
     out = dict(scene)
+    img = out.get('image')
+    if img is None or str(img).strip() == '':
+        raise ValueError('scene 缺少 image')
+    out['image'] = str(img)
     out['hold_sec'] = scene_hold_sec(out)
     out.pop('hold', None)
-    if 'image' in out and out['image'] is not None:
-        out['image'] = str(out['image'])
-    if 'text' in out and out['text'] is not None:
+    if out.get('text') is not None:
         out['text'] = str(out['text'])
+    else:
+        out['text'] = ''
     return out
 
 

@@ -447,9 +447,9 @@ def test_fail_fast_markers():
 
 def test_frontend_cancel_gate_markers():
     section('frontend cancel gate markers')
-    src = Path('webui.py').read_text(encoding='utf-8')
+    src = (Path('webui_ui.py').read_text(encoding='utf-8') + Path('webui.py').read_text(encoding='utf-8'))
     C.check('userCancelled hard gate', 'userCancelled' in src)
-    C.check('cancel keeps button disabled briefly', 'E(\'rb\').disabled=false' in src and '2000' in src)
+    C.check('cancel keeps button disabled briefly', "byId('rb').disabled=false" in src and '2000' in src)
     C.check('poll drops when userCancelled', 'userCancelled' in src[src.find('function poll()'):src.find('function done(')])
 
 

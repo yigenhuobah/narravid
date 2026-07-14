@@ -210,6 +210,7 @@ class TestFrontendGateMarkers(unittest.TestCase):
         self.assertIn('def monitor_job():', src)
         # hold_sec is the wire field (legacy hold accepted on import only)
         self.assertIn('hold_sec', src)
+        self.assertIn('function sceneHoldSec', src)
 
 
 if __name__ == '__main__':

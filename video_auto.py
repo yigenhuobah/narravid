@@ -850,7 +850,8 @@ def mix_bgm(voice_audio: Path, bgm_path: Path, out_path: Path, duck_ratio: float
 # ── 并行场景处理 ────────────────────────────────────────────────
 
 class CancelToken:
-    """进程内取消/中止令牌（WebUI 与 fail-fast 共用）。
+    """进程内取消/中止令牌（WebUI 与 fail-fast 共用；同一时刻仅一个 main）。
+    非 per-job 令牌：并发安全依赖 WebUI RENDER_LOCK 串行 main()。
 
     - set_cancelled(): 用户取消（文案含「用户取消」）
     - set_aborted(): 内部中止（场景失败 fail-fast 等，不伪装成用户取消）
@@ -1474,6 +1475,44 @@ def main(argv=None):
         print('  临时文件已清理')
     except Exception:
         pass
+
+
+
+def run_from_manifest_file(manifest_path, output_dir=None, **opts):
+    """Programmatic entry: build argv and call main(argv=...) without touching sys.argv.
+
+    opts keys map to CLI flags (snake_case): voice, speed, bgm, bgm_volume, title_card,
+    title_card_file, end_card, end_card_file, card_duration, end_card_duration,
+    subtitle_style, title_card_bg, no_smart_comma, no_burn, engine, workers.
+    """
+    argv = [str(manifest_path)]
+    if output_dir is not None:
+        argv += ['--output-dir', str(output_dir)]
+    flag_map = {
+        'voice': '--voice',
+        'speed': '--speed',
+        'bgm': '--bgm',
+        'bgm_volume': '--bgm-volume',
+        'title_card': '--title-card',
+        'title_card_file': '--title-card-file',
+        'end_card': '--end-card',
+        'end_card_file': '--end-card-file',
+        'card_duration': '--card-duration',
+        'end_card_duration': '--end-card-duration',
+        'subtitle_style': '--subtitle-style',
+        'title_card_bg': '--title-card-bg',
+        'engine': '--engine',
+        'workers': '--workers',
+    }
+    for k, flag in flag_map.items():
+        if k in opts and opts[k] is not None:
+            argv += [flag, str(opts[k])]
+    if opts.get('no_smart_comma'):
+        argv.append('--no-smart-comma')
+    if opts.get('no_burn'):
+        argv.append('--no-burn')
+    return main(argv)
+
 
 
 if __name__ == '__main__':

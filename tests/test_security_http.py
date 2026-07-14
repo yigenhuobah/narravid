@@ -456,3 +456,19 @@ class TestHeadAndMediaAllowlist(unittest.TestCase):
         finally:
             import shutil
             shutil.rmtree(out, ignore_errors=True)
+
+
+class TestB64StreamWrite(unittest.TestCase):
+    def test_write_b64_enforces_max(self):
+        import tempfile
+        from pathlib import Path as P
+        td = P(tempfile.mkdtemp())
+        dest = td / 'x.bin'
+        big = base64.b64encode(b'0123456789abcdef').decode('ascii')
+        with self.assertRaises(ValueError):
+            webui._write_b64_to_file(big, dest, max_bytes=8)
+
+
+class TestHandlerAlias(unittest.TestCase):
+    def test_h_is_webui_handler(self):
+        self.assertIs(webui.H, webui.WebUIHandler)

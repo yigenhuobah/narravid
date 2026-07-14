@@ -190,3 +190,12 @@ class TestMainArgvApi(unittest.TestCase):
                 pass
         finally:
             self.assertEqual(list(sys.argv), before)
+
+
+class TestRunFromManifestFile(unittest.TestCase):
+    def test_run_from_manifest_file_builds_argv(self):
+        import sys
+        before = list(sys.argv)
+        with self.assertRaises((SystemExit, FileNotFoundError, ValueError, Exception)):
+            video_auto.run_from_manifest_file('__nope__.json', output_dir='out', workers=1, no_burn=True)
+        self.assertEqual(list(sys.argv), before)

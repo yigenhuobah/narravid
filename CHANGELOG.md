@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added / Fixed — 中期高价值项
+
+- **`video_auto.run_from_manifest_file`**：可编程入口，不碰 `sys.argv`
+- **上传 base64 分块解码写盘** + 提前体积拒绝，降低峰值内存
+- **`WebUIHandler` 类名**（保留 `H` 别名兼容测试）
+- **完成页 warning 条**（BGM 降级等）
+- **CancelToken 文档**：标明进程级、依赖 RENDER_LOCK 串行
+
 ## [v1.10.3] - 2026-07-14
 
 ### Fixed / Added — 安全与体验收口

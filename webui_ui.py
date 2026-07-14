@@ -341,6 +341,7 @@ body{font-family:"Microsoft YaHei","PingFang SC","Noto Sans SC",sans-serif;backg
   </div>
 </div>
 <div class="result" id="rs" onclick="this.style.display='none'"></div>
+<div id="warnBar" style="display:none;max-width:1120px;margin:8px auto;padding:10px 14px;border-radius:8px;background:rgba(241,196,15,.15);border:1px solid rgba(241,196,15,.4);color:#f1c40f;font-size:13px"></div>
 
 <!-- 视频预览 -->
 <div class="preview" id="pv">
@@ -748,7 +749,10 @@ function poll(){
     if(d.done){
       if(d.cancelled||(d.progress&&d.progress.indexOf('取消')>=0)){done('已取消',null,true);return}
       if(!d.video&&!d.error){done(d.progress&&d.progress.indexOf('失败')>=0?d.progress:'渲染结束但未生成视频');return}
-      if(d.warning){try{toast(d.warning,'warn')}catch(e){}}
+      if(d.warning){
+        try{toast(d.warning,'warn')}catch(e){}
+        try{let wb=byId('warnBar');if(wb){wb.style.display='block';wb.textContent=d.warning}}catch(e){}
+      }
       done(null,d.video);return
     }
     tmr=setTimeout(poll,800);

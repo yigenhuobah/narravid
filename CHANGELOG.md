@@ -7,15 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-### Added — 开发规范
+## [v1.10.1] - 2026-07-14
+
+### Added — 质量与可维护性（补丁）
 
 - **WebUI 模块拆分**：`webui_jobs.py`（任务/路径/取消）、`webui_ui.py`（HTML/JS）；`webui.py` 保留 HTTP 入口并 re-export 以兼容测试
 - **`hold_sec` 统一**：UI 状态与模板保存使用 `hold_sec`；`video_auto.scene_hold_sec` / `normalize_manifest` 兼容历史 `hold`；`SceneDict`/`ManifestDict` TypedDict
-
 - **Ruff**：`pyproject.toml` 配置 + `requirements-dev.txt`；Linux CI 增加 `ruff check .`
 - **命名/风格约定**：`docs/STYLE.md`（Python / 内嵌 JS、渐进重命名策略）
 - **可读性改名**：内嵌 JS `pain`→`paintScenes`、`E`→`byId`、`S`→`scenes`；Python `mon`→`monitor_job`
 - **`GET /api/health`**：TTS / ffmpeg / 字体 / 活跃任务就绪信息
+
+### Fixed
+
+- **模板/导入 `hold_sec=0` 被历史 `hold` 覆盖**：`sceneHoldSec` 不用 `||` 假值合并
+- **`/api/render` 写盘前 normalize**：统一 hold 字段并校验 scene image
+- **去掉陈旧 `ACTIVE_RENDER_ID` 再导出**；活跃任务以 `_get_active_render()` 为准
+- **`scene_hold_sec`**：空值回退 legacy hold；拒绝 NaN/inf；上限 3600s
 
 ## [v1.10.0] - 2026-07-14
 

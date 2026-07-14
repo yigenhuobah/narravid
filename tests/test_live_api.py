@@ -52,6 +52,9 @@ class TestLiveBasicApi(unittest.TestCase):
             self.assertIn('tts', data)
             self.assertIn('ffmpeg', data)
             self.assertIn('ok', data)
+            self.assertIn('ok', data.get('ffmpeg', {}))
+            if data.get('ffmpeg', {}).get('ok'):
+                self.assertTrue(data['ffmpeg'].get('path'), 'ffmpeg path should be set when ok')
 
     def test_upload_and_bgm_list(self):
         with live_webui() as base:
@@ -322,12 +325,12 @@ class TestLiveRenderOpsMocked(unittest.TestCase):
             fake_fast = fake_video_auto_main(delay_sec=0.05, write_srt=False)
             calls = {'n': 0}
 
-            def side_effect(*_a, **_k):
+            def side_effect(*a, **k):
                 calls['n'] += 1
+                # forward argv= from video_auto.main(argv)
                 if calls['n'] == 1:
-                    fake_slow()
-                else:
-                    fake_fast()
+                    return fake_slow(*a, **k)
+                return fake_fast(*a, **k)
 
             try:
                 with mock.patch('video_auto.main', side_effect=side_effect):

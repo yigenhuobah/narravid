@@ -802,12 +802,14 @@ def generate_title_card(title: str, out_path: Path, width: int, height: int, bg_
 
 # ── BGM mixing ───────────────────────────────────────────────────
 
-def mix_bgm(voice_audio: Path, bgm_path: Path, out_path: Path, duck_ratio: float = 0.25):
+def mix_bgm(voice_audio: Path, bgm_path: Path, out_path: Path, duck_ratio: float = 0.25) -> str:
     """将 BGM 与配音混音，使用侧链压缩实现人声闪避效果。
 
     duck_ratio 作为 BGM 压缩后的最低音量比例（如 0.25 = 压到 25%）。
     人声出现时 BGM 被侧链压缩，人声停止时 BGM 平滑恢复。
     失败则降级为固定音量 amix。
+
+    Returns mode: 'sidechain' | 'fixed' | 'none'.
     """
     dur = ffprobe_duration(voice_audio)
     # threshold 根据 duck_ratio 反推：ratio 越小（压得越低），threshold 越灵敏
@@ -827,6 +829,7 @@ def mix_bgm(voice_audio: Path, bgm_path: Path, out_path: Path, duck_ratio: float
              f'[0:a][bgm_low]amix=inputs=2:duration=first:dropout_transition=0.5',
              '-t', f'{dur:.3f}', '-ar', '24000', '-ac', '1',
              str(out_path)], silent=True)
+        return 'sidechain'
     except Exception as e:
         print(f'  侧链压缩失败({e})，降级为固定音量混音')
         try:
@@ -837,9 +840,11 @@ def mix_bgm(voice_audio: Path, bgm_path: Path, out_path: Path, duck_ratio: float
                  f'[1:a]volume={duck_ratio:.2f}[a1];[0:a][a1]amix=inputs=2:duration=first:dropout_transition=0.5',
                  '-t', f'{dur:.3f}', '-ar', '24000', '-ac', '1',
                  str(out_path)], silent=True)
+            return 'fixed'
         except Exception as e2:
             print(f'  BGM 混音完全失败({e2})，使用原音频')
             shutil.copy2(str(voice_audio), str(out_path))
+            return 'none'
 
 
 # ── 并行场景处理 ────────────────────────────────────────────────
@@ -1061,7 +1066,7 @@ def process_single_scene(idx: int, scene: dict, project_root: Path,
 
 # ── main ─────────────────────────────────────────────────────────
 
-def main():
+def main(argv=None):
     parser = argparse.ArgumentParser(
         description='narravid — 图片 + JSON 文案 → 解说视频，一键自动生成',
         formatter_class=argparse.RawDescriptionHelpFormatter,
@@ -1096,7 +1101,8 @@ def main():
     parser.add_argument('--workers', type=int, default=0,
                         help=f'并行处理线程数 (默认 {DEFAULT_WORKERS}, 1=串行)')
 
-    args = parser.parse_args()
+    # argv=None → sys.argv[1:]; WebUI 传入显式列表，避免改写进程全局 sys.argv
+    args = parser.parse_args(None if argv is None else argv)
 
     manifest_path = Path(args.manifest).resolve()
     project_root = manifest_path.parent
@@ -1410,7 +1416,15 @@ def main():
         run([FFMPEG, '-y', '-i', str(final_mp4), '-vn', '-ar', '24000', '-ac', '1',
              str(voice_total)], silent=True)
         mixed_audio = tmp_dir / 'mixed_audio.wav'
-        mix_bgm(voice_total, Path(bgm_path).resolve(), mixed_audio, duck_ratio=bgm_volume)
+        bgm_mode = mix_bgm(voice_total, Path(bgm_path).resolve(), mixed_audio, duck_ratio=bgm_volume)
+        if bgm_mode != 'sidechain':
+            warn = ('BGM 已降级为固定音量混音' if bgm_mode == 'fixed'
+                    else 'BGM 混音失败，成片可能无背景音乐')
+            print(f'  [warn] {warn}')
+            try:
+                (out_dir / '_warnings.txt').write_text(warn + '\n', encoding='utf-8')
+            except Exception:
+                pass
         tmp_video = tmp_dir / 'video_no_audio.mp4'
         run([FFMPEG, '-y', '-i', str(final_mp4), '-i', str(mixed_audio),
              '-c:v', 'copy', '-c:a', 'aac', '-b:a', '192k', '-map', '0:v:0', '-map', '1:a:0',

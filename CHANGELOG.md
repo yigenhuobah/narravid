@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [v1.10.3] - 2026-07-14
+
 ### Fixed / Added — 安全与体验收口
 
 - **`do_HEAD` 与 GET 同策略**，避免 SimpleHTTPRequestHandler 泄露源码元数据

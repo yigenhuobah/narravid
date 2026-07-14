@@ -9,6 +9,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added — 开发规范
 
+- **WebUI 模块拆分**：`webui_jobs.py`（任务/路径/取消）、`webui_ui.py`（HTML/JS）；`webui.py` 保留 HTTP 入口并 re-export 以兼容测试
+- **`hold_sec` 统一**：UI 状态与模板保存使用 `hold_sec`；`video_auto.scene_hold_sec` / `normalize_manifest` 兼容历史 `hold`；`SceneDict`/`ManifestDict` TypedDict
+
 - **Ruff**：`pyproject.toml` 配置 + `requirements-dev.txt`；Linux CI 增加 `ruff check .`
 - **命名/风格约定**：`docs/STYLE.md`（Python / 内嵌 JS、渐进重命名策略）
 - **可读性改名**：内嵌 JS `pain`→`paintScenes`、`E`→`byId`、`S`→`scenes`；Python `mon`→`monitor_job`

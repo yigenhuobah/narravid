@@ -46,6 +46,8 @@ jobs:
           --hidden-import edge_tts
           --hidden-import _bundled_ffmpeg
           --hidden-import video_auto
+          --hidden-import webui_jobs
+          --hidden-import webui_ui
           --collect-all edge_tts
           --collect-all matplotlib
           webui.py

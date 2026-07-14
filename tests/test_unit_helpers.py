@@ -250,5 +250,29 @@ class TestAssColorLogic(unittest.TestCase):
         self.assertEqual(self.hex_to_ass('FFFFFF'), '&H00FFFFFF')
 
 
+class TestHoldSecNormalize(unittest.TestCase):
+    def test_scene_hold_sec_aliases(self):
+        self.assertEqual(video_auto.scene_hold_sec({'hold_sec': 1.5}), 1.5)
+        self.assertEqual(video_auto.scene_hold_sec({'hold': 2}), 2.0)
+        self.assertEqual(video_auto.scene_hold_sec({'hold_sec': 1, 'hold': 9}), 1.0)
+        self.assertEqual(video_auto.scene_hold_sec({}), 0.0)
+        self.assertEqual(video_auto.scene_hold_sec({'hold': 'x'}), 0.0)
+        self.assertEqual(video_auto.scene_hold_sec({'hold_sec': '', 'hold': 2.5}), 2.5)
+        self.assertEqual(video_auto.scene_hold_sec({'hold_sec': None, 'hold': 2}), 2.0)
+        self.assertEqual(video_auto.scene_hold_sec({'hold_sec': 0, 'hold': 9}), 0.0)
+        self.assertEqual(video_auto.scene_hold_sec({'hold_sec': float('inf')}), 0.0)
+
+    def test_normalize_manifest_rewrites_hold(self):
+        m = video_auto.normalize_manifest({
+            'scenes': [{'image': 'a.png', 'text': 't', 'hold': 1.25}],
+        })
+        self.assertEqual(m['scenes'][0]['hold_sec'], 1.25)
+        self.assertNotIn('hold', m['scenes'][0])
+
+    def test_normalize_requires_image(self):
+        with self.assertRaises(ValueError):
+            video_auto.normalize_manifest({'scenes': [{'text': 'x', 'hold': 1}]})
 if __name__ == '__main__':
     unittest.main()
+
+

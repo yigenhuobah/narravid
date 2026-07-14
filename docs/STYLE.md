@@ -8,7 +8,7 @@
 |------|------|------|
 | **Ruff** | Python lint + import 排序 + 基础命名 | `ruff check .` / `ruff format .` |
 | （暂无）mypy | 类型检查 | 模块边界稳定后再加 |
-| （暂无）ESLint | 前端 | UI 仍内嵌在 `webui.py` 字符串里，暂不单独拆包 |
+| （暂无）ESLint | 前端 | UI 模板在 `webui_ui.py`；HTTP 在 `webui.py`；任务状态在 `webui_jobs.py` |
 
 安装（开发机）：
 
@@ -44,7 +44,7 @@ CI：Linux workflow 会跑 `ruff check`（见 `.github/workflows/test-linux.yml`
 
 新代码不要再引入同等级的短名。改旧名时：**一次只改一条符号链，并跑 `run_tests.py --fast`**。
 
-## 内嵌 JS（`webui.py` HTML 字符串）
+## 内嵌 JS（`webui_ui.py`）
 
 | 种类 | 约定 | 示例 |
 |------|------|------|
@@ -65,7 +65,8 @@ CI：Linux workflow 会跑 `ruff check`（见 `.github/workflows/test-linux.yml`
 
 ## 文件与结构
 
-- 继续允许 `webui.py` 单文件内嵌 UI（打包简单）；新增大块逻辑优先放 Python 辅助函数，而不是再堆匿名 JS。
+- WebUI 拆分：`webui.py`（HTTP handler）+ `webui_jobs.py`（任务/路径）+ `webui_ui.py`（HTML/JS 模板）。
+- 场景停顿字段统一为 **`hold_sec`**（模板/导入仍可读历史 `hold`）。
 - 测试：`tests/test_*.py`，入口 `run_tests.py`（无 pytest 强制）。
 - 本地草稿：`_test_*.py` / `_ux_*.py` 不进仓库。
 
@@ -88,6 +89,6 @@ python run_tests.py          # + live
 后续可选：
 
 1. handler 类 `H` → `WebUIHandler`（改动面大，单独 PR）
-2. 将 HTML/JS 从 `webui.py` 字符串拆出，便于 ESLint
+2. 对 `webui_ui.py` 引入 ESLint / 进一步模块化前端
 
 不要在同一 PR 里「lint 全绿 + 全库改名 + 功能修改」。

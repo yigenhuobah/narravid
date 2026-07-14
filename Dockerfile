@@ -27,7 +27,7 @@ WORKDIR /app
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-COPY _bundled_ffmpeg.py video_auto.py webui.py ./
+COPY _bundled_ffmpeg.py video_auto.py webui.py webui_jobs.py webui_ui.py ./
 COPY examples ./examples
 COPY examples-assets ./examples-assets
 

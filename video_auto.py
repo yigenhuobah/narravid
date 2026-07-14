@@ -28,6 +28,7 @@ import threading
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
+from typing import Any, NotRequired, TypedDict
 
 # ── 统一使用 _bundled_ffmpeg 模块定位自带 ffmpeg ──────────────────
 try:
@@ -340,11 +341,99 @@ def resolve_tts_engine(requested: str | None) -> str:
 
 # ── manifest ─────────────────────────────────────────────────────
 
+class SceneDict(TypedDict):
+    """Normalized scene entry used by the pipeline."""
+    image: str
+    text: NotRequired[str]
+    hold_sec: NotRequired[float]
+
+
+class ManifestDict(TypedDict, total=False):
+    """Subset of manifest fields; scenes is required at runtime via normalize."""
+    title: str
+    width: int
+    height: int
+    fps: int
+    tts_engine: str
+    voice: str
+    rate: int
+    volume: int
+    speech_speed: float
+    scene_tail_silence_sec: float
+    burn_subtitles: Any
+    workers: int
+    bgm_volume: float
+    subtitle_style: str
+    scenes: list
+
+
+def scene_hold_sec(scene: dict) -> float:
+    """UI may historically send hold; pipeline wire format is hold_sec.
+
+    Explicit hold_sec wins when present and numeric (including 0). Empty/invalid
+    hold_sec falls back to legacy hold. Non-finite values are rejected as 0.
+    """
+    if not isinstance(scene, dict):
+        return 0.0
+
+    def _parse(raw):
+        if raw is None or raw is False:
+            return None
+        if isinstance(raw, str) and raw.strip() == '':
+            return None
+        try:
+            n = float(raw)
+        except (TypeError, ValueError):
+            return None
+        if n != n or n in (float('inf'), float('-inf')):  # NaN/inf
+            return None
+        return max(0.0, min(n, 3600.0))  # clamp to 1h
+
+    if 'hold_sec' in scene:
+        parsed = _parse(scene.get('hold_sec'))
+        if parsed is not None:
+            return parsed
+        # present but empty/invalid → try legacy hold
+    if 'hold' in scene:
+        parsed = _parse(scene.get('hold'))
+        if parsed is not None:
+            return parsed
+    return 0.0
+
+
+def normalize_scene(scene: dict) -> dict:
+    """Return a shallow-copied scene with hold_sec set and legacy hold removed."""
+    if not isinstance(scene, dict):
+        raise ValueError('scene 必须是对象')
+    out = dict(scene)
+    img = out.get('image')
+    if img is None or str(img).strip() == '':
+        raise ValueError('scene 缺少 image')
+    out['image'] = str(img)
+    out['hold_sec'] = scene_hold_sec(out)
+    out.pop('hold', None)
+    if out.get('text') is not None:
+        out['text'] = str(out['text'])
+    else:
+        out['text'] = ''
+    return out
+
+
+def normalize_manifest(data: dict) -> dict:
+    """Validate/normalize manifest dict (in place-friendly copy)."""
+    if not isinstance(data, dict):
+        raise ValueError('manifest 必须是对象')
+    out = dict(data)
+    scenes = out.get('scenes')
+    if not isinstance(scenes, list) or not scenes:
+        raise ValueError('manifest 缺少 scenes')
+    out['scenes'] = [normalize_scene(s) for s in scenes]
+    return out
+
+
 def load_manifest(path: Path):
     data = json.loads(path.read_text(encoding='utf-8-sig'))
-    if 'scenes' not in data or not data['scenes']:
-        raise ValueError('manifest 缺少 scenes')
-    return data
+    return normalize_manifest(data)
 
 # ── TTS ──────────────────────────────────────────────────────────
 
@@ -904,7 +993,7 @@ def process_single_scene(idx: int, scene: dict, project_root: Path,
     VIDEO_EXTS = {'.mp4', '.mov', '.mkv', '.avi', '.webm', '.flv'}
     is_video = image.suffix.lower() in VIDEO_EXTS
 
-    hold_sec = float(scene.get('hold_sec', 0.0))
+    hold_sec = scene_hold_sec(scene)
     raw_audio = tmp_dir / (f'{idx:03d}.raw.mp3' if tts_engine == 'edge' else f'{idx:03d}.raw.wav')
 
     _check_cancel()

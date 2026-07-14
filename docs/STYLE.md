@@ -65,7 +65,8 @@ CI：Linux workflow 会跑 `ruff check`（见 `.github/workflows/test-linux.yml`
 
 ## 文件与结构
 
-- 继续允许 `webui.py` 单文件内嵌 UI（打包简单）；新增大块逻辑优先放 Python 辅助函数，而不是再堆匿名 JS。
+- WebUI 拆分：`webui.py`（HTTP handler）+ `webui_jobs.py`（任务/路径）+ `webui_ui.py`（HTML/JS 模板）。
+- 场景停顿字段统一为 **`hold_sec`**（模板/导入仍可读历史 `hold`）。
 - 测试：`tests/test_*.py`，入口 `run_tests.py`（无 pytest 强制）。
 - 本地草稿：`_test_*.py` / `_ux_*.py` 不进仓库。
 

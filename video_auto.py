@@ -28,6 +28,7 @@ import threading
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
+from typing import Any, NotRequired, TypedDict
 
 # ── 统一使用 _bundled_ffmpeg 模块定位自带 ffmpeg ──────────────────
 try:
@@ -340,11 +341,72 @@ def resolve_tts_engine(requested: str | None) -> str:
 
 # ── manifest ─────────────────────────────────────────────────────
 
+class SceneDict(TypedDict):
+    """Normalized scene entry used by the pipeline."""
+    image: str
+    text: NotRequired[str]
+    hold_sec: NotRequired[float]
+
+
+class ManifestDict(TypedDict, total=False):
+    """Subset of manifest fields; scenes is required at runtime via normalize."""
+    title: str
+    width: int
+    height: int
+    fps: int
+    tts_engine: str
+    voice: str
+    rate: int
+    volume: int
+    speech_speed: float
+    scene_tail_silence_sec: float
+    burn_subtitles: Any
+    workers: int
+    bgm_volume: float
+    subtitle_style: str
+    scenes: list
+
+
+def scene_hold_sec(scene: dict) -> float:
+    """UI may historically send hold; pipeline wire format is hold_sec."""
+    if scene is None:
+        return 0.0
+    raw = scene.get('hold_sec', scene.get('hold', 0.0))
+    try:
+        return max(0.0, float(raw or 0.0))
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def normalize_scene(scene: dict) -> dict:
+    """Return a shallow-copied scene with hold_sec set and legacy hold removed."""
+    if not isinstance(scene, dict):
+        raise ValueError('scene 必须是对象')
+    out = dict(scene)
+    out['hold_sec'] = scene_hold_sec(out)
+    out.pop('hold', None)
+    if 'image' in out and out['image'] is not None:
+        out['image'] = str(out['image'])
+    if 'text' in out and out['text'] is not None:
+        out['text'] = str(out['text'])
+    return out
+
+
+def normalize_manifest(data: dict) -> dict:
+    """Validate/normalize manifest dict (in place-friendly copy)."""
+    if not isinstance(data, dict):
+        raise ValueError('manifest 必须是对象')
+    out = dict(data)
+    scenes = out.get('scenes')
+    if not isinstance(scenes, list) or not scenes:
+        raise ValueError('manifest 缺少 scenes')
+    out['scenes'] = [normalize_scene(s) for s in scenes]
+    return out
+
+
 def load_manifest(path: Path):
     data = json.loads(path.read_text(encoding='utf-8-sig'))
-    if 'scenes' not in data or not data['scenes']:
-        raise ValueError('manifest 缺少 scenes')
-    return data
+    return normalize_manifest(data)
 
 # ── TTS ──────────────────────────────────────────────────────────
 
@@ -904,7 +966,7 @@ def process_single_scene(idx: int, scene: dict, project_root: Path,
     VIDEO_EXTS = {'.mp4', '.mov', '.mkv', '.avi', '.webm', '.flv'}
     is_video = image.suffix.lower() in VIDEO_EXTS
 
-    hold_sec = float(scene.get('hold_sec', 0.0))
+    hold_sec = scene_hold_sec(scene)
     raw_audio = tmp_dir / (f'{idx:03d}.raw.mp3' if tts_engine == 'edge' else f'{idx:03d}.raw.wav')
 
     _check_cancel()

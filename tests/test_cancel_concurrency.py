@@ -168,7 +168,7 @@ class TestActiveRenderScoping(unittest.TestCase):
 class TestFrontendGateMarkers(unittest.TestCase):
     def test_html_contains_user_cancelled_gate(self):
         from pathlib import Path
-        src = Path('webui.py').read_text(encoding='utf-8')
+        src = Path('webui_ui.py').read_text(encoding='utf-8') + Path('webui_jobs.py').read_text(encoding='utf-8') + Path('webui.py').read_text(encoding='utf-8')
         self.assertIn('userCancelled', src)
         self.assertIn('if(rid!==pollRid||userCancelled)return', src)
         self.assertIn('function cancel()', src)
@@ -183,7 +183,7 @@ class TestFrontendGateMarkers(unittest.TestCase):
     def test_html_ux_ops_markers(self):
         """Static markers for real-user ops fixed in UX pass."""
         from pathlib import Path
-        src = Path('webui.py').read_text(encoding='utf-8')
+        src = Path('webui_ui.py').read_text(encoding='utf-8') + Path('webui_jobs.py').read_text(encoding='utf-8') + Path('webui.py').read_text(encoding='utf-8')
         # speech speed range matches backend 0.5–3.0
         self.assertIn('id="sp" min="0.5" max="3.0"', src)
         # clean confirm
@@ -208,6 +208,8 @@ class TestFrontendGateMarkers(unittest.TestCase):
         self.assertIn('const byId=', src)
         self.assertIn('let scenes=[]', src)
         self.assertIn('def monitor_job():', src)
+        # hold_sec is the wire field (legacy hold accepted on import only)
+        self.assertIn('hold_sec', src)
 
 
 if __name__ == '__main__':

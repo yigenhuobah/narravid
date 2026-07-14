@@ -21,6 +21,7 @@ import argparse
 import json
 import os
 import shutil
+import signal
 import subprocess
 import sys
 import tempfile
@@ -56,7 +57,11 @@ _ACTIVE_PROCS_LOCK = threading.Lock()
 
 
 def _kill_process(proc: subprocess.Popen):
-    """Best-effort kill of a child process (and its tree on Windows)."""
+    """Best-effort kill of a child process (and its tree).
+
+    Windows: taskkill /T. POSIX: kill process group when started with
+    start_new_session=True in run().
+    """
     if proc is None or proc.poll() is not None:
         return
     try:
@@ -68,7 +73,26 @@ def _kill_process(proc: subprocess.Popen):
                 timeout=10,
             )
         else:
-            proc.kill()
+            pid = proc.pid
+            try:
+                os.killpg(pid, signal.SIGTERM)
+            except (ProcessLookupError, PermissionError, OSError):
+                try:
+                    proc.terminate()
+                except Exception:
+                    pass
+            try:
+                proc.wait(timeout=2)
+                return
+            except Exception:
+                pass
+            try:
+                os.killpg(pid, signal.SIGKILL)
+            except (ProcessLookupError, PermissionError, OSError):
+                try:
+                    proc.kill()
+                except Exception:
+                    pass
     except Exception:
         try:
             proc.kill()
@@ -91,6 +115,9 @@ def run(cmd, silent=False):
     if silent:
         kwargs['stdout'] = subprocess.DEVNULL
         kwargs['stderr'] = subprocess.DEVNULL
+    # POSIX: new session so cancel can killpg the whole ffmpeg tree
+    if os.name != 'nt':
+        kwargs['start_new_session'] = True
     # Avoid shell; inherit no extra handles beyond stdio redirects.
     proc = subprocess.Popen(cmd, **kwargs)
     with _ACTIVE_PROCS_LOCK:
@@ -237,6 +264,19 @@ def build_sentence_segments(text: str, narration_duration: float, offset: float 
     return segments
 
 
+def default_subtitle_style() -> str:
+    """ASS force_style 默认串；FontName 随平台可用中文字体变化。"""
+    global _SUBTITLE_STYLE_CACHE
+    if _SUBTITLE_STYLE_CACHE is not None:
+        return _SUBTITLE_STYLE_CACHE
+    font = default_subtitle_font_name()
+    _SUBTITLE_STYLE_CACHE = (
+        f'FontName={font},FontSize=16,PrimaryColour=&H00FFFFFF,'
+        'OutlineColour=&H64000000,BorderStyle=3,Outline=1,Shadow=0,MarginV=30,Alignment=2'
+    )
+    return _SUBTITLE_STYLE_CACHE
+
+
 def subtitle_filter_arg(srt_path: Path, style_override: str = None) -> str:
     # ffmpeg subtitles filter 路径转义规则：
     #   路径用单引号包裹，内部特殊字符用 \ 转义：: \ ' [ ]
@@ -244,30 +284,17 @@ def subtitle_filter_arg(srt_path: Path, style_override: str = None) -> str:
     #   所以路径含单引号时改用 filename 选项避免问题
     path = str(srt_path.resolve()).replace('\\', '/')
     has_apostrophe = "'" in path
+    style = style_override or default_subtitle_style()
     if has_apostrophe:
         # 含单引号的路径：使用 filename= 选项，用双引号包裹
         # 双引号内需要转义：\ : "
         for ch in ['\\', ':', '"']:
             path = path.replace(ch, '\\' + ch)
-        if style_override:
-            style = style_override
-        else:
-            style = (
-                'FontName=Microsoft YaHei,FontSize=16,PrimaryColour=&H00FFFFFF,'
-                'OutlineColour=&H64000000,BorderStyle=3,Outline=1,Shadow=0,MarginV=30,Alignment=2'
-            )
         return f'subtitles=filename="{path}":force_style=\'{style}\''
     else:
         # 常规路径：单引号包裹，转义 : [ ]
         for ch in [':', '[', ']']:
             path = path.replace(ch, '\\' + ch)
-        if style_override:
-            style = style_override
-        else:
-            style = (
-                'FontName=Microsoft YaHei,FontSize=16,PrimaryColour=&H00FFFFFF,'
-                'OutlineColour=&H64000000,BorderStyle=3,Outline=1,Shadow=0,MarginV=30,Alignment=2'
-            )
         return f"subtitles='{path}':force_style='{style}'"
 
 
@@ -277,6 +304,39 @@ def edge_tts_available() -> bool:
         return True
     except ImportError:
         return False
+
+
+def system_tts_available() -> bool:
+    """Windows PowerShell System.Speech only."""
+    return os.name == 'nt'
+
+
+def resolve_tts_engine(requested: str | None) -> str:
+    """Pick a usable TTS engine; never default to system off Windows."""
+    req = (requested or '').strip().lower() or None
+    if req == 'system':
+        if not system_tts_available():
+            raise RuntimeError(
+                '系统 TTS 仅支持 Windows（PowerShell System.Speech）。'
+                '请改用 edge，或在 Windows 上运行。'
+            )
+        return 'system'
+    if req == 'edge':
+        if not edge_tts_available():
+            if system_tts_available():
+                print('  [warn] edge-tts 不可用，改用系统 TTS')
+                return 'system'
+            raise RuntimeError('edge-tts 未安装且当前平台无系统 TTS 可用')
+        return 'edge'
+    # auto
+    if edge_tts_available():
+        return 'edge'
+    if system_tts_available():
+        return 'system'
+    raise RuntimeError(
+        '无可用 TTS：请 pip install edge-tts（Linux/macOS/Docker 必需），'
+        '或在 Windows 上使用系统语音。'
+    )
 
 
 # ── manifest ─────────────────────────────────────────────────────
@@ -290,6 +350,8 @@ def load_manifest(path: Path):
 # ── TTS ──────────────────────────────────────────────────────────
 
 def synthesize_system_tts(text: str, wav_path: Path, voice: str, rate: int = 0, volume: int = 100):
+    if not system_tts_available():
+        raise RuntimeError('系统 TTS 仅支持 Windows（PowerShell System.Speech）')
     txt_path = wav_path.with_suffix('.txt')
     ps1_path = wav_path.with_suffix('.ps1')
     txt_path.write_text(text, encoding='utf-8')
@@ -341,12 +403,14 @@ def synthesize_edge_tts(text: str, media_path: Path, voice: str, rate: int = 0, 
 
 def synthesize_audio_with_retry(text: str, raw_audio_path: Path, engine: str, voice: str, rate: int = 0, volume: int = 100):
     if engine == 'edge':
+        last_err = None
         for attempt in range(MAX_TTS_RETRIES + 1):
             _check_cancel()
             try:
                 synthesize_edge_tts(text, raw_audio_path, voice=voice, rate=rate, volume=volume)
                 return 'edge'
-            except Exception:
+            except Exception as e:
+                last_err = e
                 _check_cancel()
                 if attempt < MAX_TTS_RETRIES:
                     # 分段 sleep，便于取消及时生效
@@ -354,17 +418,30 @@ def synthesize_audio_with_retry(text: str, raw_audio_path: Path, engine: str, vo
                         _check_cancel()
                         time.sleep(0.5)
                 else:
+                    # system_tts_available / synthesize_system_tts are the only gates
+                    if not system_tts_available():
+                        raise RuntimeError(
+                            f'edge-tts 失败（已重试 {MAX_TTS_RETRIES} 次）: {last_err}。'
+                            f'当前平台无系统 TTS 回退（仅 Windows 支持）。'
+                            f'请检查网络/edge-tts，或稍后重试。'
+                        ) from last_err
                     try:
                         _check_cancel()
-                        synthesize_system_tts(text, raw_audio_path.with_suffix('.raw.wav'), voice=DEFAULT_SYSTEM_VOICE, rate=rate, volume=volume)
+                        synthesize_system_tts(
+                            text, raw_audio_path.with_suffix('.raw.wav'),
+                            voice=DEFAULT_SYSTEM_VOICE, rate=rate, volume=volume,
+                        )
                         run([FFMPEG, '-y', '-i', str(raw_audio_path.with_suffix('.raw.wav')),
                              '-ar', '24000', '-ac', '1', str(raw_audio_path)], silent=True)
                         print(f'  [warn] Edge TTS 失败，已降级为系统 TTS（音色可能变化）')
                         return 'system'
                     except Exception as fallback_err:
-                        raise RuntimeError(f'edge-tts 和 system TTS 均失败: {fallback_err}') from fallback_err
+                        raise RuntimeError(
+                            f'edge-tts 和 system TTS 均失败: edge={last_err}; system={fallback_err}'
+                        ) from fallback_err
     elif engine == 'system':
         _check_cancel()
+        # platform guard lives in synthesize_system_tts
         synthesize_system_tts(text, raw_audio_path, voice=voice, rate=rate, volume=volume)
         return 'system'
     else:
@@ -417,26 +494,183 @@ def make_global_srt(scene_infos, out_path: Path, smart_comma: bool = True):
 
 # ── title card ───────────────────────────────────────────────────
 
-def _find_zh_font():
-    """查找可用的中文字体路径，优先系统字体，其次打包字体"""
-    # 系统字体候选
-    system_fonts = [
-        'C:/Windows/Fonts/msyh.ttc',    # Microsoft YaHei
-        'C:/Windows/Fonts/simhei.ttf',   # SimHei
-        'C:/Windows/Fonts/msyhl.ttc',    # YaHei Light
+def _font_search_roots():
+    """Bundled / repo fonts directories (PyInstaller + source), unique paths."""
+    roots = []
+    meipass = getattr(sys, '_MEIPASS', None)
+    if meipass:
+        roots.append(Path(meipass) / 'fonts')
+    roots.append(Path(__file__).resolve().parent / 'fonts')
+    if getattr(sys, 'frozen', False):
+        roots.append(Path(sys.executable).resolve().parent / 'fonts')
+    # preserve order, drop duplicates (onefile often overlaps roots)
+    uniq = []
+    seen = set()
+    for r in roots:
+        try:
+            key = str(r.resolve())
+        except Exception:
+            key = str(r)
+        if key in seen:
+            continue
+        seen.add(key)
+        uniq.append(r)
+    return uniq
+
+
+_BUNDLED_FONT_KEYWORDS = ('noto', 'sourcehan', 'msyh', 'simhei', 'wqy', 'pingfang')
+_FONT_NAME_RULES = (
+    (('msyh', 'yahei'), 'Microsoft YaHei'),
+    (('simhei',), 'SimHei'),
+    (('simsun',), 'SimSun'),
+    (('pingfang',), 'PingFang SC'),
+    (('wqy-microhei', 'microhei'), 'WenQuanYi Micro Hei'),
+    (('wqy',), 'WenQuanYi Zen Hei'),
+    (('noto',), 'Noto Sans CJK SC'),
+    (('sourcehan', 'source-han'), 'Source Han Sans SC'),
+)
+
+# Process-local caches (font set is stable for a job lifetime)
+_ZH_FONT_PATH_CACHE = None  # None=unset, False=missing, str=path
+_SUBTITLE_FONT_NAME_CACHE = None
+_SUBTITLE_STYLE_CACHE = None
+
+
+def _iter_bundled_font_files():
+    """Yield CJK-ish font files under fonts/ roots (deduped, preferred names first)."""
+    preferred = (
+        'NotoSansSC-Regular.otf', 'NotoSansSC-Regular.ttf',
+        'NotoSansCJKsc-Regular.otf', 'NotoSansCJK-Regular.ttc',
+        'SourceHanSansSC-Regular.otf', 'SourceHanSansCN-Regular.otf',
+        'wqy-microhei.ttc', 'msyh.ttc', 'simhei.ttf',
+    )
+    seen = set()
+    for root in _font_search_roots():
+        if not root.is_dir():
+            continue
+        # fast path: known filenames first (stop after first hit for _find_zh_font consumers)
+        for name in preferred:
+            p = root / name
+            if not p.is_file():
+                continue
+            try:
+                key = str(p.resolve())
+            except Exception:
+                key = str(p)
+            if key in seen:
+                continue
+            seen.add(key)
+            yield Path(key)
+        # slow path: other CJK-ish names in the directory
+        try:
+            entries = list(root.iterdir())
+        except OSError:
+            continue
+        for p in entries:
+            if not p.is_file() or p.suffix.lower() not in ('.ttf', '.otf', '.ttc'):
+                continue
+            if not any(k in p.name.lower() for k in _BUNDLED_FONT_KEYWORDS):
+                continue
+            try:
+                key = str(p.resolve())
+            except Exception:
+                key = str(p)
+            if key in seen:
+                continue
+            seen.add(key)
+            yield Path(key)
+
+
+def _system_zh_font_candidates():
+    """Platform font file candidates (first existing wins)."""
+    if os.name == 'nt':
+        return [
+            'C:/Windows/Fonts/msyh.ttc',
+            'C:/Windows/Fonts/msyhl.ttc',
+            'C:/Windows/Fonts/simhei.ttf',
+            'C:/Windows/Fonts/simsun.ttc',
+        ]
+    linux = [
+        '/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc',
+        '/usr/share/fonts/truetype/noto/NotoSansCJK-Regular.ttc',
+        '/usr/share/fonts/opentype/noto/NotoSansCJKsc-Regular.otf',
+        '/usr/share/fonts/truetype/noto/NotoSansSC-Regular.otf',
+        '/usr/share/fonts/truetype/noto/NotoSansSC-Regular.ttf',
+        '/usr/share/fonts/opentype/source-han-sans/SourceHanSansSC-Regular.otf',
+        '/usr/share/fonts/truetype/wqy/wqy-microhei.ttc',
+        '/usr/share/fonts/truetype/wqy/wqy-zenhei.ttc',
+        '/usr/share/fonts/truetype/arphic/uming.ttc',
+        '/usr/share/fonts/truetype/droid/DroidSansFallbackFull.ttf',
     ]
-    for f in system_fonts:
-        if Path(f).exists():
-            return f
-    # 打包字体（exe 模式下 _MEIPASS 或同级 fonts/ 目录）
-    try:
-        base = Path(sys._MEIPASS)
-    except AttributeError:
-        base = Path(__file__).resolve().parent
-    bundled = base / 'fonts' / 'msyh.ttc'
-    if bundled.exists():
-        return str(bundled)
-    return None
+    mac = [
+        '/System/Library/Fonts/PingFang.ttc',
+        '/System/Library/Fonts/STHeiti Light.ttc',
+        '/System/Library/Fonts/Hiragino Sans GB.ttc',
+        '/Library/Fonts/Arial Unicode.ttf',
+        '/System/Library/Fonts/Supplemental/Songti.ttc',
+    ]
+    return (mac + linux) if sys.platform == 'darwin' else (linux + mac)
+
+
+def _find_zh_font():
+    """查找可用的中文字体路径：环境变量 → 打包 fonts/ → 系统路径。"""
+    global _ZH_FONT_PATH_CACHE
+    if _ZH_FONT_PATH_CACHE is not None:
+        return _ZH_FONT_PATH_CACHE or None
+    found = None
+    env = (os.environ.get('NARRAVID_FONT') or '').strip()
+    if env:
+        p = Path(env)
+        if p.is_file():
+            found = str(p.resolve())
+    if not found:
+        for p in _iter_bundled_font_files():
+            found = str(p.resolve())
+            break
+    if not found:
+        for f in _system_zh_font_candidates():
+            if Path(f).exists():
+                found = f
+                break
+    _ZH_FONT_PATH_CACHE = found if found else False
+    return found
+
+
+def clear_font_cache_for_tests():
+    """测试用：清空字体探测缓存。"""
+    global _ZH_FONT_PATH_CACHE, _SUBTITLE_FONT_NAME_CACHE, _SUBTITLE_STYLE_CACHE
+    _ZH_FONT_PATH_CACHE = None
+    _SUBTITLE_FONT_NAME_CACHE = None
+    _SUBTITLE_STYLE_CACHE = None
+
+
+def _font_name_from_path(font_path: str | None) -> str | None:
+    if not font_path:
+        return None
+    name = Path(font_path).name.lower()
+    for keys, family in _FONT_NAME_RULES:
+        if any(k in name for k in keys):
+            return family
+    # ASS FontName is best-effort; avoid pulling matplotlib just for a label
+    return Path(font_path).stem
+
+
+def default_subtitle_font_name() -> str:
+    """ASS FontName for burn-in when user does not override style."""
+    global _SUBTITLE_FONT_NAME_CACHE
+    if _SUBTITLE_FONT_NAME_CACHE is not None:
+        return _SUBTITLE_FONT_NAME_CACHE
+    path = _find_zh_font()
+    name = _font_name_from_path(path)
+    if not name:
+        if os.name == 'nt':
+            name = 'Microsoft YaHei'
+        elif sys.platform == 'darwin':
+            name = 'PingFang SC'
+        else:
+            name = 'Noto Sans CJK SC'
+    _SUBTITLE_FONT_NAME_CACHE = name
+    return name
 
 
 def generate_title_card(title: str, out_path: Path, width: int, height: int, bg_color: str = '#1a1a2e'):
@@ -459,7 +693,7 @@ def generate_title_card(title: str, out_path: Path, width: int, height: int, bg_
     else:
         font_prop = None
         font_name = 'sans-serif'
-        print('  [warn] 未找到中文字体，标题页可能显示方块')
+        print('  [warn] 未找到中文字体，标题页可能显示方块；可设置 NARRAVID_FONT 或安装 Noto CJK / 将字体放入 fonts/')
 
     fig, ax = plt.subplots(figsize=(width / 100, height / 100), dpi=100)
     fig.patch.set_facecolor(bg_color)
@@ -796,7 +1030,10 @@ def main():
     width = _safe_int(manifest.get('width', DEFAULT_W), DEFAULT_W, 'width')
     height = _safe_int(manifest.get('height', DEFAULT_H), DEFAULT_H, 'height')
     fps = _safe_int(manifest.get('fps', DEFAULT_FPS), DEFAULT_FPS, 'fps')
-    tts_engine = args.engine or manifest.get('tts_engine') or ('edge' if edge_tts_available() else 'system')
+    try:
+        tts_engine = resolve_tts_engine(args.engine or manifest.get('tts_engine'))
+    except RuntimeError as e:
+        raise SystemExit(f'错误: {e}') from e
     voice = args.voice or manifest.get('voice') or (DEFAULT_EDGE_VOICE if tts_engine == 'edge' else DEFAULT_SYSTEM_VOICE)
     rate = _safe_int(manifest.get('rate', 0), 0, 'rate')
     volume = _safe_int(manifest.get('volume', 100), 100, 'volume')

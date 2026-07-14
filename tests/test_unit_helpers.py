@@ -124,6 +124,12 @@ class TestWebuiPathHelpers(unittest.TestCase):
 
     def test_sanitize_upload(self):
         self.assertEqual(webui._sanitize_upload_name('../../evil.png'), 'evil.png')
+        # 中文与特殊字符净化为 ASCII 安全名；保留扩展名
+        self.assertEqual(webui._sanitize_upload_name('测试 图片#1.png'), '1.png')
+        self.assertEqual(webui._sanitize_upload_name('my clip 2.mp3'), 'my_clip_2.mp3')
+        cn = webui._sanitize_upload_name('封面图.png')
+        self.assertEqual(cn, 'file.png')
+        self.assertTrue(all(ord(c) < 128 for c in cn))
 
     def test_sanitize_render_id(self):
         self.assertEqual(webui._sanitize_render_id('r_abc-12'), 'r_abc-12')

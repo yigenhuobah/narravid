@@ -5,6 +5,41 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added / Fixed — 跨平台（Linux / Docker）
+
+- **系统 TTS 门控**：非 Windows 禁用 PowerShell system TTS；Edge 失败不再误走 system fallback
+- **进程树取消（POSIX）**：`run()` 使用 `start_new_session`；`_kill_process` 使用 `killpg` SIGTERM→SIGKILL
+- **中文字体发现**：`NARRAVID_FONT`、`fonts/`、Windows / Linux Noto·WQY / macOS PingFang 候选
+- **字幕默认 FontName**：随可用字体（`default_subtitle_font_name`），非写死微软雅黑
+- **`_bundled_ffmpeg`**：同时识别无后缀与 `.exe`；支持 `NARRAVID_FFMPEG` / `FFMPEG` 环境变量
+- **WebUI TTS 检测**：不再在 Linux 上谎称「系统 TTS」；字幕字体按平台默认；`NARRAVID_HOST`/`NARRAVID_DOCKER`
+- **`Dockerfile` + `.dockerignore`**：slim + ffmpeg + fonts-noto-cjk
+- **CI**：`.github/workflows/test-linux.yml`（`--fast` / default / pipeline）
+- **`tests/test_platform.py`**：字体 / TTS 门控 / kill / ffmpeg 名
+
+### Added — 测试覆盖扩展
+
+- **`tests/support.py`**：`fake_video_auto_main` / `poll_status` / `http_raw`，供 live 层无 TTS 测渲染生命周期
+- **`tests/test_security_http.py`**：空 scenes、缺 image、中文文件名、坏 zip 400、export 含 BGM/标题、late-cancel 保留 video、status 回填 srt、`.srt` 下载
+- **`tests/test_live_api.py`**：模板 BGM/时长、fake 渲染+srt、中途取消、完成后 cancel、双任务锁、导出导入往返、clean
+- **`tests/test_cancel_concurrency.py`**：前端 UX 标记（模板 BGM、import 40MB、thumb 占位、语速 3.0、clean confirm）
+- **`test_e2e.py`**：模板 CRUD、导出/导入、完成后 cancel、clean（真 TTS 路径）
+
+### Fixed — WebUI 真实用户操作问题
+
+- **完成后迟到 cancel 抹掉成片 URL**：`_mark_job_cancelled` / `/api/cancel` 对已成功或已失败终态直接忽略，保留 `video` 与超时/失败诊断
+- **模板不记住 BGM / 片头片尾时长**：`saveTemplate`/`loadTemplate` 持久化并恢复 `bgm`、`card_duration`、`end_card_duration`
+- **导入工程前后端体积不一致**：前端 zip 上限改为约 40MB（匹配 60MB body + base64）
+- **坏 zip 返回 500**：`BadZipFile` 改为 400「不是有效的 zip 工程文件」，并清理空工程目录
+- **空场景缩略图假 loading**：未上传时显示 `+` 占位并可点击换图
+- **无图场景静默丢弃**：生成时 toast 提示跳过数量
+- **状态 `srt` 恒为空**：渲染成功后回填 `.srt` 下载路径
+- **上传中文文件名未 ASCII 化**：`_sanitize_upload_name` 仅保留 `A-Za-z0-9._-`
+- **语速滑条上限 2.2**：改为 0.5–3.0，与后端 `atempo` 链一致
+- **清理旧文件无确认**：`cleanOld` 增加 `confirm`
+
 ## [v1.9.0] - 2026-07-13
 
 ### Fixed — 路径安全 / 取消语义 / 失败诊断

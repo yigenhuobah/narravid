@@ -97,6 +97,40 @@ class TestUploadSanitize(unittest.TestCase):
         self.assertTrue(p.name.endswith('evil.png'))
         p.unlink(missing_ok=True)
 
+    def test_chinese_name_ascii_only(self):
+        raw = b'\x89PNG\r\n\x1a\n' + b'\x00' * 8
+        body = json.dumps({
+            'name': '测试 图片#1.png',
+            'data': base64.b64encode(raw).decode('ascii'),
+            'kind': 'image',
+        }).encode('utf-8')
+        h = make_handler('/api/upload', 'POST', body)
+        webui.H.do_POST(h)
+        code, data = read_response(h)
+        self.assertEqual(code, 200)
+        p = Path(data['path'])
+        self.assertTrue(webui._is_under(p, webui.UPLOAD_DIR))
+        self.assertTrue(all(ord(c) < 128 for c in p.name))
+        self.assertTrue(p.name.endswith('.png'))
+        p.unlink(missing_ok=True)
+
+    def test_image_oversize_413(self):
+        # body itself must stay under MAX_UPLOAD_SIZE; craft slightly over IMAGE limit
+        # Use small payload with mocked size check path: raw after b64 decode
+        big = b'x' * (webui.MAX_IMAGE_SIZE + 10)
+        body = json.dumps({
+            'name': 'big.png',
+            'data': base64.b64encode(big).decode('ascii'),
+            'kind': 'image',
+        }).encode('utf-8')
+        if len(body) > webui.MAX_UPLOAD_SIZE:
+            self.skipTest('base64 body exceeds MAX_UPLOAD_SIZE; image limit enforced earlier')
+        h = make_handler('/api/upload', 'POST', body)
+        webui.H.do_POST(h)
+        code, data = read_response(h)
+        self.assertEqual(code, 413)
+        self.assertIn('图片', str(data.get('error', '')))
+
 
 class TestRenderIdAndMedia(unittest.TestCase):
     def test_render_id_rewritten(self):
@@ -131,6 +165,26 @@ class TestRenderIdAndMedia(unittest.TestCase):
         code, data = read_response(h)
         self.assertEqual(code, 400)
         self.assertIn('非法', str(data.get('error', '')))
+
+    def test_empty_scenes_rejected(self):
+        body = json.dumps({'manifest': {'scenes': []}}).encode('utf-8')
+        h = make_handler('/api/render', 'POST', body)
+        with mock.patch('webui.threading.Thread', FakeThread):
+            webui.H.do_POST(h)
+        code, data = read_response(h)
+        self.assertEqual(code, 400)
+        self.assertIn('scenes', str(data.get('error', '')).lower())
+
+    def test_missing_image_rejected(self):
+        body = json.dumps({
+            'manifest': {'scenes': [{'text': 'no image'}]},
+        }).encode('utf-8')
+        h = make_handler('/api/render', 'POST', body)
+        with mock.patch('webui.threading.Thread', FakeThread):
+            webui.H.do_POST(h)
+        code, data = read_response(h)
+        self.assertEqual(code, 400)
+        self.assertIn('image', str(data.get('error', '')).lower())
 
 
 class TestExportImport(unittest.TestCase):
@@ -233,6 +287,51 @@ class TestExportImport(unittest.TestCase):
                 break
             proj = proj.parent
 
+    def test_import_bad_zip_400(self):
+        body = json.dumps({
+            'data': base64.b64encode(b'not-a-zip-file').decode('ascii'),
+        }).encode('utf-8')
+        before = {p.name for p in webui.UPLOAD_DIR.glob('project_*')}
+        h = make_handler('/api/import', 'POST', body)
+        webui.H.do_POST(h)
+        code, data = read_response(h)
+        self.assertEqual(code, 400)
+        self.assertIn('zip', str(data.get('error', '')).lower())
+        after = {p.name for p in webui.UPLOAD_DIR.glob('project_*')}
+        # no orphan project dirs left from failed import
+        self.assertEqual(after - before, set())
+
+    def test_export_includes_title_and_bgm_relative(self):
+        inside = write_tiny_png(webui.UPLOAD_DIR / '_max_export_bgm_scene.png')
+        bgm = webui.UPLOAD_DIR / '_max_export_bgm.wav'
+        bgm.write_bytes(b'RIFF' + b'\x00' * 12)
+        try:
+            body = json.dumps({
+                'manifest': {
+                    'scenes': [{'image': str(inside), 'text': 'a'}],
+                    'title_card': '开场',
+                    'end_card': '完',
+                },
+                'bgm': str(bgm),
+                'title_card': '开场',
+                'end_card': '完',
+                'card_duration': 2,
+                'end_card_duration': 1.5,
+            }).encode('utf-8')
+            h = make_handler('/api/export', 'POST', body)
+            webui.H.do_POST(h)
+            code, data = read_response(h)
+            self.assertEqual(code, 200)
+            zf = zipfile.ZipFile(io.BytesIO(data))
+            man = json.loads(zf.read('manifest.json'))
+            self.assertEqual(man.get('title_card'), '开场')
+            self.assertEqual(man.get('end_card'), '完')
+            self.assertTrue(str(man.get('bgm', '')).startswith('assets/'))
+            self.assertTrue(any(n.startswith('assets/bgm') for n in zf.namelist()))
+        finally:
+            inside.unlink(missing_ok=True)
+            bgm.unlink(missing_ok=True)
+
 
 class TestTemplateCrud(unittest.TestCase):
     def test_reject_bad_id(self):
@@ -240,6 +339,89 @@ class TestTemplateCrud(unittest.TestCase):
         webui.H.do_GET(h)
         code, _ = read_response(h)
         self.assertIn(code, (404, 403))
+
+
+class TestCancelLateAndSrtStatus(unittest.TestCase):
+    def test_cancel_finished_job_ignored_keeps_video(self):
+        rid = 'maxtest_late_cancel'
+        out = webui._job_out_dir(rid)
+        out.mkdir(parents=True, exist_ok=True)
+        mp4 = out / 'manifest.mp4'
+        mp4.write_bytes(b'fake')
+        srt = out / 'manifest.srt'
+        srt.write_text('1\n00:00:00,000 --> 00:00:01,000\nhi\n', encoding='utf-8')
+        video_url = '/' + mp4.resolve().relative_to(ROOT.resolve()).as_posix()
+        srt_url = '/' + srt.resolve().relative_to(ROOT.resolve()).as_posix()
+        webui.JOBS[rid] = {
+            'done': True,
+            'cancelled': False,
+            'video': video_url,
+            'srt': srt_url,
+            'progress': '完成',
+            'error': '',
+            'out': out,
+        }
+        try:
+            h = make_handler(f'/api/cancel/{rid}', 'POST', b'')
+            webui.H.do_POST(h)
+            code, data = read_response(h)
+            self.assertEqual(code, 200)
+            self.assertTrue(data.get('ignored'))
+            h2 = make_handler(f'/api/status/{rid}')
+            webui.H.do_GET(h2)
+            code2, st = read_response(h2)
+            self.assertEqual(code2, 200)
+            self.assertEqual(st.get('video'), video_url)
+            self.assertFalse(st.get('cancelled'))
+            self.assertEqual(st.get('srt'), srt_url)
+        finally:
+            webui.JOBS.pop(rid, None)
+            shutil.rmtree(out, ignore_errors=True)
+
+    def test_status_backfills_srt_from_out_dir(self):
+        rid = 'maxtest_srt_backfill'
+        out = webui._job_out_dir(rid)
+        out.mkdir(parents=True, exist_ok=True)
+        mp4 = out / 'manifest.mp4'
+        mp4.write_bytes(b'fake')
+        (out / 'manifest.srt').write_text('1\n00:00:00,000 --> 00:00:00,500\nx\n', encoding='utf-8')
+        webui.JOBS[rid] = {
+            'done': True,
+            'cancelled': False,
+            'video': '',
+            'srt': '',
+            'progress': '完成',
+            'error': '',
+            'out': out,
+        }
+        try:
+            h = make_handler(f'/api/status/{rid}')
+            webui.H.do_GET(h)
+            code, st = read_response(h)
+            self.assertEqual(code, 200)
+            self.assertTrue(st.get('video', '').endswith('.mp4'))
+            self.assertTrue(st.get('srt', '').endswith('.srt'))
+        finally:
+            webui.JOBS.pop(rid, None)
+            shutil.rmtree(out, ignore_errors=True)
+
+
+class TestJobSrtServing(unittest.TestCase):
+    def test_job_srt_allowed(self):
+        rid = 'maxtest_job_srt_ok'
+        out = webui._job_out_dir(rid)
+        out.mkdir(parents=True, exist_ok=True)
+        srt = out / 'final.srt'
+        srt.write_text('1\n00:00:00,000 --> 00:00:01,000\nok\n', encoding='utf-8')
+        try:
+            url = '/' + srt.resolve().relative_to(ROOT.resolve()).as_posix()
+            h = make_handler(url)
+            webui.H.do_GET(h)
+            code, body = read_response(h)
+            self.assertEqual(code, 200)
+            self.assertIn(b'-->', body)
+        finally:
+            shutil.rmtree(out, ignore_errors=True)
 
 
 if __name__ == '__main__':

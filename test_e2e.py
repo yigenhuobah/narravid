@@ -263,15 +263,17 @@ def run_tests(base_url: str, test_dir: Path, workers: int, result: TestResult):
     except Exception as e:
         result.fail('正常缩略图可访问', str(e))
 
-    # 4b: 路径遍历攻击
+    # 4b: 路径遍历 / 白名单外绝对路径（跨平台）
+    import os as _os
+    _forbid = 'C:/Windows/win.ini' if _os.name == 'nt' else '/etc/passwd'
     try:
-        url = base_url + '/thumb?path=' + __import__('urllib.parse').parse.quote('C:/Windows/win.ini')
+        url = base_url + '/thumb?path=' + __import__('urllib.parse').parse.quote(_forbid)
         resp = urlopen(url, timeout=5)
         # 如果返回 403，说明安全防护生效
         result.fail('路径遍历防护', f'应该返回 403，实际返回 {resp.status}')
     except HTTPError as e:
         if e.code in (403, 404):
-            result.ok('路径遍历防护', f'返回 {e.code}')
+            result.ok('路径遍历防护', f'返回 {e.code} ({_forbid})')
         else:
             result.fail('路径遍历防护', f'期望 403/404，返回 {e.code}')
 
@@ -455,6 +457,172 @@ def run_tests(base_url: str, test_dir: Path, workers: int, result: TestResult):
             result.fail('空 scenes 渲染应报错', '但未报错')
     else:
         result.ok('空 scenes 请求被拒绝', f'status={status}')
+
+    # ── 测试 11: 模板 CRUD（含 BGM / 片头片尾时长字段） ──
+    print('\n[11] 模板 CRUD')
+    tpl_body = {
+        'name': 'e2e-tpl',
+        'scenes': [
+            {'image': uploaded_images[0][0], 'text': '模板文案', 'hold': 0.3},
+        ],
+        'voice': 'zh-CN-XiaoxiaoNeural',
+        'speed': '1.5',
+        'burn': True,
+        'resolution': '1280x720',
+        'title_card': 'E2E标题',
+        'end_card': 'E2E结尾',
+        'card_duration': '2',
+        'end_card_duration': '1.5',
+        'bgm': bgm_remote or '',
+        'bgm_volume': '0.25',
+        'workers': '2',
+    }
+    status, data = api_post(base_url, '/api/templates', tpl_body)
+    if status == 200 and data.get('id'):
+        tid = data['id']
+        result.ok('保存模板', tid)
+        status, one = api_get(base_url, f'/api/templates/{tid}')
+        if status == 200 and one.get('bgm') == (bgm_remote or '') and str(one.get('card_duration')) == '2':
+            result.ok('模板含 BGM 与时长字段')
+        else:
+            result.fail('模板含 BGM 与时长字段', f'{status} {one}')
+        # rename via PUT
+        try:
+            from urllib.request import Request, urlopen as _urlopen
+            body = json.dumps({'name': 'e2e-tpl-renamed'}, ensure_ascii=False).encode('utf-8')
+            req = Request(base_url + f'/api/templates/{tid}', data=body,
+                          headers={'Content-Type': 'application/json'}, method='PUT')
+            resp = _urlopen(req, timeout=10)
+            put_ok = resp.status == 200
+        except Exception as e:
+            put_ok = False
+            result.fail('重命名模板', str(e))
+        if put_ok:
+            result.ok('重命名模板')
+        try:
+            req = Request(base_url + f'/api/templates/{tid}', method='DELETE')
+            resp = _urlopen(req, timeout=10)
+            if resp.status == 200:
+                result.ok('删除模板')
+            else:
+                result.fail('删除模板', f'status={resp.status}')
+        except Exception as e:
+            result.fail('删除模板', str(e))
+    else:
+        result.fail('保存模板', f'{status} {data}')
+
+    # ── 测试 12: 导出 / 导入工程 ──
+    print('\n[12] 导出/导入工程')
+    export_payload = {
+        'manifest': {
+            'title': 'e2e-export',
+            'width': 1280,
+            'height': 720,
+            'scenes': [
+                {'image': uploaded_images[0][0], 'text': '导出场景', 'hold_sec': 0.3},
+            ],
+            'title_card': '导出标题',
+            'end_card': '导出结尾',
+            'card_duration': 2,
+            'end_card_duration': 1.5,
+        },
+        'bgm': bgm_remote,
+        'title_card': '导出标题',
+        'end_card': '导出结尾',
+        'card_duration': 2,
+        'end_card_duration': 1.5,
+    }
+    try:
+        from urllib.request import Request, urlopen as _urlopen
+        body = json.dumps(export_payload, ensure_ascii=False).encode('utf-8')
+        req = Request(base_url + '/api/export', data=body,
+                      headers={'Content-Type': 'application/json'}, method='POST')
+        resp = _urlopen(req, timeout=60)
+        zbytes = resp.read()
+        if resp.status == 200 and zbytes[:2] == b'PK':
+            result.ok('导出 zip', f'{len(zbytes)} bytes')
+            import zipfile, io as _io
+            with zipfile.ZipFile(_io.BytesIO(zbytes)) as zf:
+                man = json.loads(zf.read('manifest.json').decode('utf-8'))
+                if man['scenes'][0]['image'].startswith('assets/'):
+                    result.ok('导出路径为相对 assets')
+                else:
+                    result.fail('导出路径为相对 assets', man['scenes'][0]['image'])
+            status, imp = api_post(base_url, '/api/import', {
+                'data': base64.b64encode(zbytes).decode('ascii'),
+            })
+            if status == 200 and imp.get('manifest', {}).get('scenes'):
+                result.ok('导入工程', f"scenes={len(imp['manifest']['scenes'])}")
+                if imp['manifest'].get('title_card') == '导出标题':
+                    result.ok('导入恢复 title_card')
+                else:
+                    result.fail('导入恢复 title_card', str(imp['manifest'].get('title_card')))
+            else:
+                result.fail('导入工程', f'{status} {imp}')
+        else:
+            result.fail('导出 zip', f'status={resp.status}')
+    except Exception as e:
+        result.fail('导出/导入工程', str(e))
+
+    # bad zip
+    status, data = api_post(base_url, '/api/import', {
+        'data': base64.b64encode(b'not-a-zip').decode('ascii'),
+    })
+    if status == 400:
+        result.ok('非法 zip 返回 400', str(data)[:80])
+    else:
+        result.fail('非法 zip 返回 400', f'{status} {data}')
+
+    # ── 测试 13: 完成后 cancel 保留成片 ──
+    print('\n[13] 完成后 cancel 保留成片')
+    # 复用已完成的 e2etest 若仍在；否则快速静音场景
+    probe_id = None
+    # 找一个刚完成的短任务
+    short = {
+        'manifest': {
+            'title': 'e2e-late-cancel',
+            'width': 960,
+            'height': 540,
+            'tts_engine': 'edge',
+            'voice': 'zh-CN-XiaoxiaoNeural',
+            'speech_speed': 1.5,
+            'burn_subtitles': False,
+            'workers': 1,
+            'scenes': [
+                {'image': uploaded_images[0][0], 'text': '', 'hold_sec': 1.0},
+            ],
+        },
+        'render_id': 'e2elatecancel',
+    }
+    status, data = api_post(base_url, '/api/render', short)
+    if status == 200 and data.get('render_id'):
+        rid = data['render_id']
+        final = poll_until_done(base_url, rid, timeout=90)
+        if final.get('video') and final.get('done'):
+            video = final['video']
+            cst, cdata = api_post(base_url, f'/api/cancel/{rid}')
+            st2, after = api_get(base_url, f'/api/status/{rid}')
+            if st2 == 200 and after.get('video') == video and not after.get('cancelled'):
+                result.ok('完成后 cancel 保留成片', video)
+            else:
+                result.fail('完成后 cancel 保留成片', f'cancel={cdata} after={after}')
+            if final.get('srt'):
+                result.ok('status 含 srt', final['srt'])
+            else:
+                # hold-only may still produce empty/global srt depending on pipeline
+                result.skip('status 含 srt', 'hold-only 场景可能无独立 srt 字段')
+        else:
+            result.fail('完成后 cancel 前置渲染', str(final)[:160])
+    else:
+        result.fail('完成后 cancel 发起渲染', f'{status} {data}')
+
+    # ── 测试 14: 清理接口 ──
+    print('\n[14] 清理旧文件')
+    status, data = api_post(base_url, '/api/clean')
+    if status == 200 and 'message' in data:
+        result.ok('清理旧文件', data.get('message'))
+    else:
+        result.fail('清理旧文件', f'{status} {data}')
 
 
 # ── 主流程 ───────────────────────────────────────────────────

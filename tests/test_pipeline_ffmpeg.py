@@ -63,7 +63,8 @@ class TestCliPipelineSmoke(unittest.TestCase):
                 'width': 320,
                 'height': 240,
                 'fps': 10,
-                'tts_engine': 'system',
+                # hold-only empty text: must not require system TTS (Linux CI)
+                'tts_engine': 'edge',
                 'workers': 1,
                 'burn_subtitles': False,
                 'scenes': [
@@ -76,12 +77,15 @@ class TestCliPipelineSmoke(unittest.TestCase):
             argv = [
                 'video_auto.py', str(mp),
                 '--output-dir', str(out_dir),
-                '--engine', 'system',
+                '--engine', 'edge',
                 '--workers', '1',
                 '--no-burn',
             ]
             video_auto.CancelToken.reset()
-            with mock.patch('sys.argv', argv):
+            # Guard: empty-text hold path must never call system/edge synthesizers
+            with mock.patch('sys.argv', argv), \
+                 mock.patch.object(video_auto, 'synthesize_system_tts', side_effect=AssertionError('system TTS should not run')), \
+                 mock.patch.object(video_auto, 'synthesize_edge_tts', side_effect=AssertionError('edge TTS should not run for empty text')):
                 video_auto.main()
             mp4s = list(out_dir.glob('*.mp4'))
             self.assertTrue(mp4s, 'expected final mp4')

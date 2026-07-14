@@ -33,7 +33,7 @@ ROOT = Path(__file__).resolve().parent
 sys.path.insert(0, str(ROOT))
 
 LAYERS = {
-    'unit': ['tests.test_unit_helpers'],
+    'unit': ['tests.test_unit_helpers', 'tests.test_platform'],
     'security': ['tests.test_security_http'],
     'cancel': ['tests.test_cancel_concurrency'],
     'live': ['tests.test_live_api'],

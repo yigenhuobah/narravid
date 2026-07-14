@@ -1,21 +1,52 @@
 ﻿# narravid
 
-把图片 + JSON 文案自动变成解说视频。**双击 exe 即用，零安装。**
+把图片 + JSON 文案自动变成解说视频。Windows 可 **双击 exe**；也支持 Linux / Docker 源码运行（Edge TTS）。
 
-## 下载（推荐）
+## 下载（Windows 推荐）
 
 去 [Releases](https://github.com/yigenhuobah/narravid/releases) 下载 `narravid-webui.exe`。
 
 - **ffmpeg 已打包在内，无需手动安装**
-- 双击运行 → 浏览器自动打开 → 拖图片、写文案、点生成
+- 双击运行 → 终端会打印本机地址（默认 `http://127.0.0.1:5000`）→ 浏览器打开 → 拖图片、写文案、点生成
 
 ## 从源码运行
 
 ```bash
 pip install -r requirements.txt
-python webui.py        # Web UI（推荐）
+# 需要系统已安装 ffmpeg/ffprobe（Windows 也可用 PATH 上的 ffmpeg）
+python webui.py        # Web UI（推荐）→ http://127.0.0.1:5000
 python video_auto.py my-video.json   # 命令行
 ```
+
+### 平台说明
+
+| 能力 | Windows | Linux / Docker | macOS |
+|------|---------|----------------|-------|
+| Edge TTS | ✅（需出网） | ✅（需出网） | ✅ |
+| 系统 TTS（PowerShell） | ✅ | ❌ | ❌ |
+| ffmpeg | 打包 exe 或 PATH | apt/包管理安装 | brew 等 |
+| 中文标题 / 字幕 | 微软雅黑等 | 需 Noto CJK 等，或 `NARRAVID_FONT` / `fonts/` | PingFang 等 |
+| 取消杀 ffmpeg 进程树 | taskkill /T | killpg | killpg |
+
+Linux 依赖示例（Debian/Ubuntu）：
+
+```bash
+sudo apt-get install -y ffmpeg fonts-noto-cjk
+pip install -r requirements.txt
+python webui.py --host 127.0.0.1 --port 5000
+```
+
+可选环境变量：`NARRAVID_FONT`（字体文件）、`NARRAVID_HOST` / `NARRAVID_PORT`、`NARRAVID_DOCKER=1`（默认监听 `0.0.0.0`）、`NARRAVID_FFMPEG` / `NARRAVID_FFPROBE`。
+
+### Docker（单用户）
+
+```bash
+docker build -t narravid .
+docker run --rm -p 5000:5000 -v narravid-data:/app/rendered narravid
+# 浏览器打开 http://127.0.0.1:5000
+```
+
+镜像内已装 ffmpeg + Noto CJK，TTS 仅 Edge。**局域网多人时请在反代上加鉴权**，不要裸暴露端口。
 
 ## Web UI 功能
 

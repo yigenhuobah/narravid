@@ -173,9 +173,9 @@ class TestFrontendGateMarkers(unittest.TestCase):
         self.assertIn('if(rid!==pollRid||userCancelled)return', src)
         self.assertIn('function cancel()', src)
         # 模板应持久化 BGM 与片头片尾时长
-        self.assertIn('bgm:E(\'bgmSel\').value', src)
-        self.assertIn('card_duration:E(\'tcd\').value', src)
-        self.assertIn('end_card_duration:E(\'ecd\').value', src)
+        self.assertIn("bgm:byId('bgmSel').value", src)
+        self.assertIn("card_duration:byId('tcd').value", src)
+        self.assertIn("end_card_duration:byId('ecd').value", src)
         self.assertIn('thumb-ph', src)
         self.assertIn('已跳过', src)
         self.assertIn('MAX_IMPORT_ZIP', src)
@@ -204,6 +204,10 @@ class TestFrontendGateMarkers(unittest.TestCase):
         # cancel API ignores finished jobs; bad zip is 400
         self.assertIn('ignored', src)
         self.assertIn('不是有效的 zip 工程文件', src)
+        self.assertIn('function paintScenes()', src)
+        self.assertIn('const byId=', src)
+        self.assertIn('let scenes=[]', src)
+        self.assertIn('def monitor_job():', src)
 
 
 if __name__ == '__main__':

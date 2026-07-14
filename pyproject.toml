@@ -1,0 +1,62 @@
+[project]
+name = "narravid"
+version = "1.10.0"
+description = "Image/video scenes + JSON narration → spoken explainer video"
+readme = "README.md"
+requires-python = ">=3.11"
+license = { text = "MIT" }
+
+[tool.ruff]
+target-version = "py311"
+line-length = 120
+src = ["."]
+extend-exclude = [
+  ".git",
+  "rendered",
+  "test_output",
+  "dist",
+  "build",
+  "__pycache__",
+  # Local / ignored scratch (if present)
+  "_test_*.py",
+  "_ux_*.py",
+]
+
+[tool.ruff.lint]
+# Practical CI baseline. Naming conventions for humans live in docs/STYLE.md;
+# pep8-naming (N) is not a hard gate yet — too much legacy short-id debt in webui JS/Python.
+select = [
+  "E",   # pycodestyle errors
+  "W",   # pycodestyle warnings
+  "F",   # pyflakes
+  "I",   # isort
+  "B",   # bugbear
+  "UP",  # pyupgrade
+]
+ignore = [
+  "E501",  # line length — large single-file modules + long strings
+  "E701",  # multiple statements on one line (colon) — compact handlers
+  "E702",  # multiple statements on one line (semicolon) — legacy compact style
+  "E401",  # multiple imports on one line — webui header style
+  "B904",  # raise from within except — gradual
+]
+
+[tool.ruff.lint.per-file-ignores]
+# Triple-quoted UI template; avoid fighting the HTML/JS blob.
+"webui.py" = [
+  "E501",
+  "F401",  # imports used only from string-adjacent runtime paths still matter; keep F841 etc.
+]
+"_smoke_test.py" = ["ALL"]
+"_*.py" = ["ALL"]
+"test_e2e.py" = ["E501"]
+"test_regressions.py" = ["E501", "F401", "F841"]
+
+[tool.ruff.lint.isort]
+known-first-party = ["video_auto", "webui", "_bundled_ffmpeg"]
+combine-as-imports = true
+
+[tool.ruff.format]
+quote-style = "preserve"
+indent-style = "space"
+line-ending = "auto"

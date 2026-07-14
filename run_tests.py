@@ -22,7 +22,6 @@ Exit code 0 only if all selected layers pass.
 from __future__ import annotations
 
 import argparse
-import os
 import subprocess
 import sys
 import time

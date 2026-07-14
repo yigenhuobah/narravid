@@ -1,0 +1,3 @@
+# Dev / CI quality tools (not required for runtime or PyInstaller end users)
+-r requirements.txt
+ruff>=0.8.0

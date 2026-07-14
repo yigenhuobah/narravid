@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added — 开发规范
+
+- **Ruff**：`pyproject.toml` 配置 + `requirements-dev.txt`；Linux CI 增加 `ruff check .`
+- **命名/风格约定**：`docs/STYLE.md`（Python / 内嵌 JS、渐进重命名策略）
+- **可读性改名**：内嵌 JS `pain`→`paintScenes`、`E`→`byId`、`S`→`scenes`；Python `mon`→`monitor_job`
+- **`GET /api/health`**：TTS / ffmpeg / 字体 / 活跃任务就绪信息
+
 ## [v1.10.0] - 2026-07-14
 
 ### Added / Fixed — 跨平台（Linux / Docker）

@@ -8,7 +8,6 @@ import math
 import os
 import struct
 import sys
-import tempfile
 import threading
 import time
 import wave
@@ -25,7 +24,6 @@ if str(ROOT) not in sys.path:
 
 import video_auto  # noqa: E402
 import webui  # noqa: E402
-
 
 # ── tiny assets ──────────────────────────────────────────────────
 

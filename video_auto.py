@@ -24,7 +24,6 @@ import shutil
 import signal
 import subprocess
 import sys
-import tempfile
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -252,7 +251,7 @@ def build_sentence_segments(text: str, narration_duration: float, offset: float 
     total_weight = sum(weights) or 1
     cur = offset
     segments = []
-    for i, (sentence, weight) in enumerate(zip(sentences, weights), 1):
+    for i, (sentence, weight) in enumerate(zip(sentences, weights, strict=True), 1):
         seg_dur = narration_duration * weight / total_weight
         end = offset + narration_duration if i == len(sentences) else cur + seg_dur
         segments.append({
@@ -383,8 +382,9 @@ def synthesize_edge_tts(text: str, media_path: Path, voice: str, rate: int = 0, 
     """使用 edge-tts Python API 合成语音（不再起子进程，兼容 exe 打包）"""
     if not edge_tts_available():
         raise RuntimeError('edge-tts 未安装')
-    import edge_tts
     import asyncio
+
+    import edge_tts
     clean_text = text.replace('\ufffd', '').replace('�', '').strip()
     if not clean_text:
         raise RuntimeError('edge-tts: 文本为空')
@@ -433,7 +433,7 @@ def synthesize_audio_with_retry(text: str, raw_audio_path: Path, engine: str, vo
                         )
                         run([FFMPEG, '-y', '-i', str(raw_audio_path.with_suffix('.raw.wav')),
                              '-ar', '24000', '-ac', '1', str(raw_audio_path)], silent=True)
-                        print(f'  [warn] Edge TTS 失败，已降级为系统 TTS（音色可能变化）')
+                        print('  [warn] Edge TTS 失败，已降级为系统 TTS（音色可能变化）')
                         return 'system'
                     except Exception as fallback_err:
                         raise RuntimeError(
@@ -678,8 +678,8 @@ def generate_title_card(title: str, out_path: Path, width: int, height: int, bg_
     try:
         import matplotlib
         matplotlib.use('Agg')
-        import matplotlib.pyplot as plt
         import matplotlib.font_manager as fm
+        import matplotlib.pyplot as plt
     except ImportError:
         print('  [warn] matplotlib not available, skipping title card')
         return None
@@ -1013,7 +1013,6 @@ def main():
     project_root = manifest_path.parent
 
     manifest = load_manifest(manifest_path)
-    title = manifest.get('title', manifest_path.stem)
     def _safe_int(val, default, name):
         try:
             return int(val)
@@ -1294,7 +1293,7 @@ def main():
                 'text': '', 'narration_duration': 0, 'hold_sec': 0,
                 'scene_duration': end_card_duration, 'mp4': str(ec_mp4), 'audio': str(ec_wav),
             })
-            print(f'  End card OK')
+            print('  End card OK')
         else:
             print('  [warn] 封尾页生成失败，跳过')
 

@@ -99,3 +99,7 @@ test_e2e.py               # full WebUI e2e
 | System TTS | PowerShell | unsupported by design |
 
 Linux CI: `.github/workflows/test-linux.yml` installs `ffmpeg` + `fonts-noto-cjk` and runs `run_tests.py`.
+
+## Project docs
+
+See repo `docs/ARCHITECTURE.md`, `docs/REMAINING_DEBT.md` for what tests intentionally do not cover (e.g. multipart upload, per-job CancelToken).

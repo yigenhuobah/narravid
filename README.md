@@ -141,6 +141,7 @@ ruff check .
 ```
 
 命名与风格约定见 [docs/STYLE.md](docs/STYLE.md)。
+架构 / 剩余债 / 运维 / 给后续协作者：[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) · [docs/REMAINING_DEBT.md](docs/REMAINING_DEBT.md) · [docs/OPS.md](docs/OPS.md) · [docs/FUTURE_AGENTS.md](docs/FUTURE_AGENTS.md)。
 
 ## License
 

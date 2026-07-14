@@ -353,7 +353,7 @@ body{font-family:"Microsoft YaHei","PingFang SC","Noto Sans SC",sans-serif;backg
 </div>
 
 <script>
-let scenes=[],rid=null,tmr=null,uploading=0,bgmList=[],currentVideo='',ttsEngine='edge';
+let scenes=[],rid=null,tmr=null,uploading=0,bgmList=[],currentVideo='',ttsEngine='edge',subStyleTouched=false;
 const byId=id=>document.getElementById(id);
 /* hold_sec wire field; legacy templates may still send hold. Do not use || (0 is valid). */
 function sceneHoldSec(s){
@@ -432,12 +432,13 @@ function updateSubPreview(){
 }
 
 function bindSubStyleControls(){
-  byId('ssFont').onchange=e=>{subStyle.font=e.target.value;updateSubPreview()};
-  byId('ssSize').oninput=e=>{subStyle.size=parseInt(e.target.value)||16;updateSubPreview()};
-  byId('ssOutline').oninput=e=>{subStyle.outline=parseFloat(e.target.value)||0;updateSubPreview()};
-  byId('ssMargin').oninput=e=>{subStyle.margin=parseInt(e.target.value)||0;updateSubPreview()};
-  byId('ssAlign').onchange=e=>{subStyle.align=parseInt(e.target.value);updateSubPreview()};
-  byId('ssBold').onchange=e=>{subStyle.bold=e.target.checked;updateSubPreview()};
+  const mark=()=>{subStyleTouched=true};
+  byId('ssFont').onchange=e=>{mark();subStyle.font=e.target.value;updateSubPreview()};
+  byId('ssSize').oninput=e=>{mark();subStyle.size=parseInt(e.target.value)||16;updateSubPreview()};
+  byId('ssOutline').oninput=e=>{mark();subStyle.outline=parseFloat(e.target.value)||0;updateSubPreview()};
+  byId('ssMargin').oninput=e=>{mark();subStyle.margin=parseInt(e.target.value)||0;updateSubPreview()};
+  byId('ssAlign').onchange=e=>{mark();subStyle.align=parseInt(e.target.value);updateSubPreview()};
+  byId('ssBold').onchange=e=>{mark();subStyle.bold=e.target.checked;updateSubPreview()};
   // 颜色联动
   byId('ssColorPicker').oninput=e=>{subStyle.color=e.target.value.slice(1).toUpperCase();byId('ssColor').value=subStyle.color;updateSubPreview()};
   byId('ssColor').oninput=e=>{let v=e.target.value.replace(/[^0-9A-Fa-f]/g,'').slice(0,6).toUpperCase();e.target.value=v;if(v.length===6){subStyle.color=v;byId('ssColorPicker').value='#'+v;updateSubPreview()}};
@@ -665,7 +666,7 @@ function paintScenes(){
         +'<textarea placeholder="输入解说文案（按句自动切字幕，逗号长句智能断句）" oninput="scenes['+i+'].text=this.value">'+esc(s.text)+'</textarea>'
         +'<div class="foot">'
           +'<span class="'+pathCls+'">'+esc(nm||(s._loading?'上传中...':(s._error?'上传失败':'未上传文件')))+'</span>'
-          +'<input class="hold-input" type="number" placeholder="停顿秒" value="'+(s.hold_sec||'')+'" oninput="scenes['+i+'].hold_sec=parseFloat(this.value)||0" title="场景末尾额外停留秒数">'
+          +'<input class="hold-input" type="number" placeholder="停顿秒" value="'+(s.hold_sec||'')+'" oninput="let _hv=this.value.trim();scenes['+i+'].hold_sec=_hv===''?0:(parseFloat(_hv)||0)" title="场景末尾额外停留秒数">'
           +'<button class="btn-sm" onclick="chImg('+i+')">换图</button>'
           +'<button class="del" onclick="del('+i+')" title="删除场景">×</button>'
         +'</div>'
@@ -700,13 +701,12 @@ async function render(){
   if(skipped>0){toast('已跳过 '+skipped+' 个未上传媒体的场景','warn')}
   let bgm=byId('bgmSel').value||null;
   let res=(byId('res').value||'1920x1080').split('x');
-  let subStyleStr=buildSubStyleStr();
   let m={title:'narravid',width:parseInt(res[0]),height:parseInt(res[1]),tts_engine:ttsEngine,workers:parseInt(byId('wk').value),
     voice:byId('v').value,speech_speed:parseFloat(byId('sp').value),burn_subtitles:byId('bs').checked,
     bgm_volume:parseFloat(byId('bvol').value),card_duration:parseFloat(byId('tcd').value),
     end_card_duration:parseFloat(byId('ecd').value),
-    subtitle_style:subStyleStr,
     scenes:valid.map(s=>({image:s.image,text:s.text.trim(),hold_sec:sceneHoldSec(s)}))};
+  if(subStyleTouched){m.subtitle_style=buildSubStyleStr()}
   let body={manifest:m,bgm:bgm,
     title_card:byId('tc').value.trim()||null,
     end_card:byId('ec').value.trim()||null,
@@ -748,6 +748,7 @@ function poll(){
     if(d.done){
       if(d.cancelled||(d.progress&&d.progress.indexOf('取消')>=0)){done('已取消',null,true);return}
       if(!d.video&&!d.error){done(d.progress&&d.progress.indexOf('失败')>=0?d.progress:'渲染结束但未生成视频');return}
+      if(d.warning){try{toast(d.warning,'warn')}catch(e){}}
       done(null,d.video);return
     }
     tmr=setTimeout(poll,800);

@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed / Added — 安全与体验收口
+
+- **`do_HEAD` 与 GET 同策略**，避免 SimpleHTTPRequestHandler 泄露源码元数据
+- **模板 PUT 体积上限**；export/render 媒体扩展名白名单，拒绝 job 内部日志
+- **zip 导入**：条目数上限 + 失败清理工程目录
+- **WebUI 不再 `os.chdir`**；视频场景探测视频流
+- **未改字幕样式时不强制下发 subtitle_style**（用服务端默认字体）
+- **渲染 warning toast**；pre-commit / deploy 示例
+
 ## [v1.10.2] - 2026-07-14
 
 ### Fixed — 深度审计跟进

@@ -47,6 +47,7 @@ docker run --rm -p 5000:5000 -v narravid-data:/app/rendered narravid
 ```
 
 镜像内已装 ffmpeg + Noto CJK，TTS 仅 Edge。**局域网多人时请在反代上加鉴权**，不要裸暴露端口。
+示例：`deploy/docker-compose.example.yml` + Basic Auth（见 `deploy/README.md`）。
 
 ## Web UI 功能
 

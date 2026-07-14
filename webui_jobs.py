@@ -19,6 +19,13 @@ MAX_IMAGE_SIZE = 20 * 1024 * 1024
 MAX_VIDEO_SIZE = 60 * 1024 * 1024
 MAX_BGM_SIZE = 50 * 1024 * 1024
 MAX_UPLOAD_SIZE = 60 * 1024 * 1024
+MAX_TEMPLATE_BODY = 1 * 1024 * 1024  # PUT/POST template JSON
+MEDIA_FILE_EXTS = {
+    '.png', '.jpg', '.jpeg', '.gif', '.webp', '.bmp',
+    '.mp4', '.mov', '.mkv', '.avi', '.webm', '.flv',
+    '.mp3', '.wav', '.aac', '.m4a', '.flac', '.ogg',
+}
+INTERNAL_NAME_BLOCKLIST = {'_stderr.log', '_progress.txt', '_warnings.txt', '_title_card.txt', '_end_card.txt'}
 
 JOBS = {}
 RENDER_LOCK = threading.Lock()  # 全局渲染锁：同时只允许一个渲染任务执行
@@ -98,8 +105,25 @@ def _job_out_dir(rid: str) -> Path | None:
     return out
 
 
+def _is_exportable_media(path: Path) -> bool:
+    """True if path is a user media file (not job internals) under allowlisted roots."""
+    try:
+        rp = path.resolve()
+    except Exception:
+        return False
+    if not (rp.exists() and rp.is_file() and _is_under_any(rp, MEDIA_ALLOWED_DIRS)):
+        return False
+    if rp.name in INTERNAL_NAME_BLOCKLIST:
+        return False
+    # job outputs may include only final media under OUT_BASE; block logs/json
+    if rp.suffix.lower() not in MEDIA_FILE_EXTS:
+        return False
+    # under OUT_BASE but inside uploads/templates is ok; inside job dirs only media exts
+    return True
+
+
 def _resolve_media_path(raw, base_dir: Path = None) -> Path | None:
-    """Resolve scene/BGM path; must exist as file under MEDIA_ALLOWED_DIRS."""
+    """Resolve scene/BGM path; must exist as media file under MEDIA_ALLOWED_DIRS."""
     if not raw:
         return None
     p = Path(str(raw))
@@ -108,7 +132,7 @@ def _resolve_media_path(raw, base_dir: Path = None) -> Path | None:
         p = (base / p).resolve()
     else:
         p = p.resolve()
-    if not (p.exists() and p.is_file() and _is_under_any(p, MEDIA_ALLOWED_DIRS)):
+    if not _is_exportable_media(p):
         return None
     return p
 

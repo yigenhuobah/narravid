@@ -1,0 +1,27 @@
+# Example: single-user narravid behind Basic Auth (NOT for public multi-tenant).
+# 1) caddy hash-password  → put hash below
+# 2) docker compose -f deploy/docker-compose.example.yml up -d
+services:
+  narravid:
+    build: ..
+    environment:
+      NARRAVID_DOCKER: "1"
+      NARRAVID_HOST: "0.0.0.0"
+    volumes:
+      - narravid-data:/app/rendered
+    expose:
+      - "5000"
+    restart: unless-stopped
+
+  caddy:
+    image: caddy:2
+    ports:
+      - "8080:80"
+    volumes:
+      - ./Caddyfile.example:/etc/caddy/Caddyfile:ro
+    depends_on:
+      - narravid
+    restart: unless-stopped
+
+volumes:
+  narravid-data:

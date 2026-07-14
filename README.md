@@ -2,6 +2,15 @@
 
 把图片 + JSON 文案自动变成解说视频。Windows 可 **双击 exe**；也支持 Linux / Docker 源码运行（Edge TTS）。
 
+## For AI agents / 自动化协作者
+
+若你是 **Claude / Cursor / 其它 coding agent**，请**不要**只扫本 README 就改架构。  
+先读专属说明书（禁区、门禁、契约、债项导流）：
+
+**→ [docs/AGENT_GUIDE.md](docs/AGENT_GUIDE.md)**
+
+短交接页：[docs/FUTURE_AGENTS.md](docs/FUTURE_AGENTS.md)。人类用户继续看下方下载与使用说明即可。
+
 ## 下载（Windows 推荐）
 
 去 [Releases](https://github.com/yigenhuobah/narravid/releases) 下载 `narravid-webui.exe`。
@@ -141,7 +150,12 @@ ruff check .
 ```
 
 命名与风格约定见 [docs/STYLE.md](docs/STYLE.md)。
-架构 / 剩余债 / 运维 / 给后续协作者：[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) · [docs/REMAINING_DEBT.md](docs/REMAINING_DEBT.md) · [docs/OPS.md](docs/OPS.md) · [docs/FUTURE_AGENTS.md](docs/FUTURE_AGENTS.md)。
+
+| 读者 | 文档 |
+|------|------|
+| **AI / Agent（请从这里进）** | **[docs/AGENT_GUIDE.md](docs/AGENT_GUIDE.md)** |
+| 架构 / 债 / 运维 | [ARCHITECTURE](docs/ARCHITECTURE.md) · [REMAINING_DEBT](docs/REMAINING_DEBT.md) · [OPS](docs/OPS.md) |
+| 人类贡献 / 短交接 | [CONTRIBUTING](docs/CONTRIBUTING.md) · [FUTURE_AGENTS](docs/FUTURE_AGENTS.md) |
 
 ## License
 

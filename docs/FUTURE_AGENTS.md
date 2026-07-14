@@ -1,12 +1,16 @@
 # 给后续 Agent / 协作者
 
+> **完整说明书请读：[AGENT_GUIDE.md](AGENT_GUIDE.md)**（README 已导流至此）。  
+> 本页是压缩交接；细节与禁区以 `AGENT_GUIDE` + 债文档为准。
+
 ## 先读
 
-1. `docs/ARCHITECTURE.md` — 模块与作业流  
-2. `docs/REMAINING_DEBT.md` — 别重复已关闭项  
-3. `docs/STYLE.md` — 命名与 Ruff  
-4. `docs/OPS.md` — 运行与发版  
-5. `CLAUDE.md`（若本地有）— 仓库约定  
+1. **`docs/AGENT_GUIDE.md`** — Agent 专用（命令 / 禁止 / 契约）  
+2. `docs/ARCHITECTURE.md` — 模块与作业流  
+3. `docs/REMAINING_DEBT.md` — 别重复已关闭项  
+4. `docs/STYLE.md` — 命名与 Ruff  
+5. `docs/OPS.md` — 运行与发版  
+6. `CLAUDE.md`（若本地有）— 仓库约定  
 
 ## 改代码时
 

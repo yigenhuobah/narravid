@@ -1,6 +1,6 @@
 # 贡献简表
 
-1. 读 `docs/FUTURE_AGENTS.md` + `docs/REMAINING_DEBT.md`
+1. **Agent / 自动化：** 先读 [`docs/AGENT_GUIDE.md`](AGENT_GUIDE.md)；人类可再看 `docs/FUTURE_AGENTS.md` + `docs/REMAINING_DEBT.md`
 2. 分支开发，PR；CI：Ruff + `run_tests.py`
 3. 本地：`pip install -r requirements-dev.txt && ruff check . && python run_tests.py --fast`
 4. 不提交 `rendered/`、`_ux_*`、私货配置

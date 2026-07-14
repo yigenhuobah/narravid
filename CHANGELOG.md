@@ -7,7 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-### Fixed — 深度扫描 critical / high（v1.10.4 候选）
+## [v1.10.4] - 2026-07-14
+
+### Fixed — 深度扫描 critical / high
 
 - **WebUI 捕获 `SystemExit`**：`video_auto.main` 致命错误不再假“完成且无视频”
 - **Frozen 数据根**：`webui_jobs` 写入 exe 旁目录（或 `NARRAVID_DATA_DIR`），不再写进 `_MEIPASS`
@@ -21,7 +23,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **CLI PyInstaller**：补 `--collect-all matplotlib`（标题/片尾卡）
 - **测试**：SystemExit 假成功 live 用例；中途取消须终态 cancelled；E2E 取消轮询终态
 
-### Added / Fixed — 中期高价值项（已合入 main）
+### Added / Fixed — 中期高价值项
 
 - **`video_auto.run_from_manifest_file`**：可编程入口，不碰 `sys.argv`
 - **上传 base64 分块解码写盘** + 提前体积拒绝，降低峰值内存

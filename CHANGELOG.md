@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed — 深度审计跟进
+
+- **`video_auto.main(argv=...)`**：WebUI 不再改写全局 `sys.argv` 驱动渲染
+- **`/api/health` ffmpeg 探测**：以 `-version` 为准，去掉裸名假阳性
+- **BGM 降级可观测**：混音降级/失败写入 `_warnings.txt` 并出现在 status `warning`
+
 ## [v1.10.1] - 2026-07-14
 
 ### Added — 质量与可维护性（补丁）

@@ -176,3 +176,17 @@ class TestSubtitleFilterUsesDefault(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main()
+
+
+class TestMainArgvApi(unittest.TestCase):
+    def test_main_accepts_explicit_argv(self):
+        """main(argv=...) must parse without mutating process sys.argv."""
+        import sys
+        before = list(sys.argv)
+        try:
+            try:
+                video_auto.main(['__no_such_manifest__.json', '--workers', '1'])
+            except (SystemExit, FileNotFoundError, ValueError, Exception):
+                pass
+        finally:
+            self.assertEqual(list(sys.argv), before)

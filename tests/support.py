@@ -200,25 +200,30 @@ def poll_status(base_url: str, rid: str, timeout: float = 60.0, interval: float 
 def fake_video_auto_main(delay_sec: float = 0.05, write_srt: bool = True, text: str = 'fake line'):
     """Return a stand-in for video_auto.main() that writes a tiny mp4 (+ optional srt).
 
-    Reads --output-dir from sys.argv (same shape webui builds). Avoids Edge TTS / ffmpeg
+    Reads --output-dir from main(argv=...) or sys.argv. Avoids Edge TTS / ffmpeg
     so live/ops tests stay offline-fast while still exercising JOBS / status / cancel.
     """
     def _abort_if_cancelled():
         if video_auto.CancelToken.is_cancelled():
             raise RuntimeError('渲染已被用户取消')
 
-    def _main():
+    def _main(argv=None):
         import sys as _sys
         import time as _time
         out = None
-        argv = list(_sys.argv)
+        # Prefer explicit argv (video_auto.main(argv=...)); fall back to sys.argv for old callers
+        if argv is None:
+            argv = list(_sys.argv)
+        else:
+            argv = list(argv)
+        # allow either full sys.argv shape or parse_args shape (no script name)
         if '--output-dir' in argv:
             i = argv.index('--output-dir')
             if i + 1 < len(argv):
                 out = Path(argv[i + 1])
         if out is None:
-            for a in reversed(argv[1:]):
-                p = Path(a)
+            for a in reversed(argv):
+                p = Path(str(a))
                 if p.suffix == '.json':
                     out = p.parent
                     break

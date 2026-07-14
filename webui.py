@@ -118,6 +118,8 @@ class H(SimpleHTTPRequestHandler):
                 'srt': j.get('srt'),
                 'cancelled': cancelled,
             }
+            if j.get('warning'):
+                resp['warning'] = j.get('warning')
             if done:
                 if j.get('error'):
                     resp['error'] = j['error'][-300:]
@@ -176,17 +178,36 @@ class H(SimpleHTTPRequestHandler):
             ffprobe_path = ''
             try:
                 import shutil
+                import subprocess
 
                 import _bundled_ffmpeg as _bf
                 ffmpeg_path = _bf.get_ffmpeg()
                 ffprobe_path = _bf.get_ffprobe()
-                ffmpeg_ok = bool(shutil.which(ffmpeg_path) or Path(ffmpeg_path).is_file() or ffmpeg_path == 'ffmpeg')
-                ffprobe_ok = bool(shutil.which(ffprobe_path) or Path(ffprobe_path).is_file() or ffprobe_path == 'ffprobe')
-                # Prefer real existence when absolute
-                if Path(ffmpeg_path).is_file():
-                    ffmpeg_ok = True
-                if Path(ffprobe_path).is_file():
-                    ffprobe_ok = True
+
+                def _tool_ok(path: str) -> bool:
+                    if not path:
+                        return False
+                    pth = Path(path)
+                    if pth.is_file():
+                        resolved = str(pth)
+                    else:
+                        found = shutil.which(path)
+                        if not found:
+                            return False
+                        resolved = found
+                    try:
+                        r = subprocess.run(
+                            [resolved, '-version'],
+                            stdout=subprocess.DEVNULL,
+                            stderr=subprocess.DEVNULL,
+                            timeout=5,
+                        )
+                        return r.returncode == 0
+                    except Exception:
+                        return False
+
+                ffmpeg_ok = _tool_ok(ffmpeg_path)
+                ffprobe_ok = _tool_ok(ffprobe_path)
             except Exception:
                 pass
             font_path = None
@@ -393,11 +414,10 @@ class H(SimpleHTTPRequestHandler):
                          'cancel_event': cancel_event, 'done': False, 'error': '',
                          'cancelled': False}
 
-            # 保存原始 argv 和 cwd，线程结束后恢复
-            orig_argv = sys.argv
-            orig_cwd = os.getcwd()
-            # 环境变量：只设 progress_file，不改全局 os.environ
+            # 环境变量：只设 progress_file；main(argv=...) 避免改写全局 sys.argv
             progress_env_val = str(progress_file)
+            # cmd[0] 是 SCRIPT 占位，parse_args 只要选项列表
+            main_argv = [str(x) for x in cmd[1:]]
 
             def run_in_thread():
                 j = JOBS.get(rid)
@@ -420,12 +440,11 @@ class H(SimpleHTTPRequestHandler):
                     # 若在 set active 瞬间被取消，立刻武装 token
                     if j.get('cancelled') or (j.get('cancel_event') and j['cancel_event'].is_set()):
                         _va.CancelToken.set_cancelled()
+                    orig_cwd = os.getcwd()
                     try:
                         os.chdir(str(ROOT))
-                        sys.argv = cmd
-                        # 只设 progress_file 环境变量，不污染全局
                         os.environ['NARRAVID_PROGRESS_FILE'] = progress_env_val
-                        _va.main()
+                        _va.main(main_argv)
                         # 若取消/超时已抢先标记，不要把状态覆盖成“完成”
                         if j.get('cancelled') or j.get('error'):
                             prior = (j.get('error') or '').strip()
@@ -473,18 +492,26 @@ class H(SimpleHTTPRequestHandler):
                             j['error'] = msg[-500:]
                             j['progress'] = f'失败: {e}'[:200]
                     finally:
-                        # 恢复原始状态
+                        # 恢复 cwd / cancel / progress env（不再改写 sys.argv）
                         if _get_active_render() == rid:
                             _set_active_render(None)
                         try:
                             _va.CancelToken.reset()
                         except Exception:
                             pass
-                        sys.argv = orig_argv
-                        os.chdir(orig_cwd)
-                        # 恢复 progress_file 环境变量
+                        try:
+                            os.chdir(orig_cwd)
+                        except Exception:
+                            pass
                         if 'NARRAVID_PROGRESS_FILE' in os.environ:
                             del os.environ['NARRAVID_PROGRESS_FILE']
+                        # surface BGM soft-failure warnings if any
+                        try:
+                            wf = Path(j.get('out') or out) / '_warnings.txt'
+                            if wf.is_file() and not j.get('error'):
+                                j['warning'] = wf.read_text(encoding='utf-8').strip()[:300]
+                        except Exception:
+                            pass
                         j['done'] = True
 
             def monitor_job():

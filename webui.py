@@ -24,6 +24,7 @@ from webui_jobs import (  # re-export for tests / external importers
     JOBS,
     MAX_BGM_SIZE,
     MAX_IMAGE_SIZE,
+    MAX_TEMPLATE_BODY,
     MAX_UPLOAD_SIZE,
     MAX_VIDEO_SIZE,
     OUT_BASE,
@@ -34,6 +35,7 @@ from webui_jobs import (  # re-export for tests / external importers
     UPLOAD_DIR,
     _check_edge_tts,
     _get_active_render,
+    _is_exportable_media,
     _is_under,
     _is_under_any,
     _is_waiting_for_lock,
@@ -51,6 +53,31 @@ from webui_ui import HTML
 SCRIPT = ROOT / 'video_auto.py'
 
 class H(SimpleHTTPRequestHandler):
+    def do_HEAD(self):
+        """Same access policy as GET — never fall through to SimpleHTTPRequestHandler."""
+        # Reuse GET handlers which call _file/_json; for HEAD only headers matter.
+        # Temporarily wrap _file to skip body.
+        orig_file = self._file
+        def _head_file(fp, ct, as_attachment=False):
+            self.send_response(200)
+            self.send_header('Content-Type', ct)
+            if as_attachment:
+                self.send_header('Content-Disposition', f'attachment; filename="{fp.name}"')
+            else:
+                self.send_header('Content-Disposition', f'inline; filename="{fp.name}"')
+            try:
+                size = fp.stat().st_size
+            except Exception:
+                size = 0
+            self.send_header('Content-Length', str(size))
+            self.send_header('Cache-Control', 'max-age=3600')
+            self.end_headers()
+        self._file = _head_file  # type: ignore[method-assign]
+        try:
+            self.do_GET()
+        finally:
+            self._file = orig_file  # type: ignore[method-assign]
+
     def do_GET(self):
         p = urllib.parse.urlparse(self.path)
         if p.path == '/' or p.path == '/index.html':
@@ -440,9 +467,8 @@ class H(SimpleHTTPRequestHandler):
                     # 若在 set active 瞬间被取消，立刻武装 token
                     if j.get('cancelled') or (j.get('cancel_event') and j['cancel_event'].is_set()):
                         _va.CancelToken.set_cancelled()
-                    orig_cwd = os.getcwd()
+                    # 路径均为绝对/可解析；不再 chdir，避免污染进程工作目录
                     try:
-                        os.chdir(str(ROOT))
                         os.environ['NARRAVID_PROGRESS_FILE'] = progress_env_val
                         _va.main(main_argv)
                         # 若取消/超时已抢先标记，不要把状态覆盖成“完成”
@@ -497,10 +523,6 @@ class H(SimpleHTTPRequestHandler):
                             _set_active_render(None)
                         try:
                             _va.CancelToken.reset()
-                        except Exception:
-                            pass
-                        try:
-                            os.chdir(orig_cwd)
                         except Exception:
                             pass
                         if 'NARRAVID_PROGRESS_FILE' in os.environ:
@@ -652,14 +674,8 @@ class H(SimpleHTTPRequestHandler):
                 manifest_copy['card_duration'] = data.get('card_duration')
             if data.get('end_card_duration') is not None and 'end_card_duration' not in manifest_copy:
                 manifest_copy['end_card_duration'] = data.get('end_card_duration')
-            export_roots = [UPLOAD_DIR.resolve(), (ROOT / 'examples-assets').resolve(), OUT_BASE.resolve()]
-
             def _exportable(path: Path) -> bool:
-                try:
-                    rp = path.resolve()
-                except Exception:
-                    return False
-                return rp.exists() and rp.is_file() and _is_under_any(rp, export_roots)
+                return _is_exportable_media(path)
 
             for i, scene in enumerate(manifest_copy.get('scenes', [])):
                 if not isinstance(scene, dict):
@@ -737,17 +753,24 @@ class H(SimpleHTTPRequestHandler):
                 # 安全检查：防止路径穿越和 zip bomb
                 total_size = 0
                 max_extract = 500 * 1024 * 1024  # 500MB 上限
+                max_members = 2000
                 safe_members = []
-                for member in zf.namelist():
+                names = zf.namelist()
+                if len(names) > max_members:
+                    shutil.rmtree(project_dir, ignore_errors=True)
+                    self._json({'error': f'zip 条目过多（上限 {max_members}）'}, 400); return
+                for member in names:
                     # 检查路径穿越
                     member_path = (project_dir / member).resolve()
                     try:
                         member_path.relative_to(project_dir.resolve())
                     except ValueError:
+                        shutil.rmtree(project_dir, ignore_errors=True)
                         self._json({'error': f'zip 包含非法路径: {member}'}, 400); return
                     # 检查解压后总大小（header 声明 + 实际写出字节双保险）
                     total_size += zf.getinfo(member).file_size
                     if total_size > max_extract:
+                        shutil.rmtree(project_dir, ignore_errors=True)
                         self._json({'error': 'zip 解压后超过 500MB 限制'}, 400); return
                     safe_members.append(member)
                 # 流式解压并累计实际写入字节，防止 header 低报
@@ -760,6 +783,7 @@ class H(SimpleHTTPRequestHandler):
                         continue
                     target = (project_dir / member).resolve()
                     if not _is_under(target, project_dir):
+                        shutil.rmtree(project_dir, ignore_errors=True)
                         self._json({'error': f'zip 包含非法路径: {member}'}, 400); return
                     target.parent.mkdir(parents=True, exist_ok=True)
                     with zf.open(info, 'r') as src, open(target, 'wb') as dst:
@@ -774,6 +798,7 @@ class H(SimpleHTTPRequestHandler):
                                     target.unlink(missing_ok=True)
                                 except Exception:
                                     pass
+                                shutil.rmtree(project_dir, ignore_errors=True)
                                 self._json({'error': 'zip 解压后超过 500MB 限制'}, 400); return
                             dst.write(chunk)
             # 读取 manifest 并修正路径
@@ -854,6 +879,9 @@ class H(SimpleHTTPRequestHandler):
     def do_PUT(self):
         p = urllib.parse.urlparse(self.path)
         length = int(self.headers.get('Content-Length', 0))
+        if length > MAX_TEMPLATE_BODY:
+            self._json({'error': f'请求过大（上限 {MAX_TEMPLATE_BODY // 1024}KB）'}, 413)
+            return
         body = self.rfile.read(length) if length else b''
         if p.path.startswith('/api/templates/'):
             tid = p.path.split('/')[-1]

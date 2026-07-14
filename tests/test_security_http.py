@@ -426,3 +426,33 @@ class TestJobSrtServing(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main()
+
+
+class TestHeadAndMediaAllowlist(unittest.TestCase):
+    def test_head_does_not_serve_source(self):
+        h = make_handler('/webui.py', 'HEAD')
+        # do_HEAD should not 200-serve source via SimpleHTTPRequestHandler
+        if hasattr(webui.H, 'do_HEAD'):
+            webui.H.do_HEAD(h)
+            code, _ = read_response(h)
+            self.assertIn(code, (403, 404))
+        else:
+            self.fail('do_HEAD not implemented')
+
+    def test_export_rejects_internal_log(self):
+        rid = 'maxtest_export_log'
+        out = webui._job_out_dir(rid)
+        out.mkdir(parents=True, exist_ok=True)
+        log = out / '_stderr.log'
+        log.write_text('secret', encoding='utf-8')
+        try:
+            body = json.dumps({
+                'manifest': {'scenes': [{'image': str(log), 'text': 'x'}]},
+            }).encode('utf-8')
+            h = make_handler('/api/export', 'POST', body)
+            webui.H.do_POST(h)
+            code, data = read_response(h)
+            self.assertEqual(code, 400)
+        finally:
+            import shutil
+            shutil.rmtree(out, ignore_errors=True)

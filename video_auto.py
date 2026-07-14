@@ -431,7 +431,7 @@ def normalize_manifest(data: dict) -> dict:
     return out
 
 
-def load_manifest(path: Path):
+def load_manifest(path: Path) -> dict:
     data = json.loads(path.read_text(encoding='utf-8-sig'))
     return normalize_manifest(data)
 
@@ -1042,6 +1042,16 @@ def process_single_scene(idx: int, scene: dict, project_root: Path,
     progress.report(idx, 'Render ...')
     if is_video:
         # 视频背景：丢弃视频原始音轨，用 TTS 音频；-t 控制总时长（已含 hold）
+        # 先确认有视频流，避免 -map 0:v:0 晦涩失败
+        try:
+            vprobe = subprocess.check_output([
+                FFPROBE, '-v', 'error', '-select_streams', 'v:0',
+                '-show_entries', 'stream=codec_type', '-of', 'csv=p=0', str(image)
+            ], timeout=60, text=True, encoding='utf-8', errors='replace').strip()
+            if not vprobe:
+                raise RuntimeError(f'scene {idx} 媒体无视频流: {image.name}')
+        except subprocess.CalledProcessError as e:
+            raise RuntimeError(f'scene {idx} 无法探测视频流: {image.name}') from e
         run([FFMPEG, '-y',
              '-stream_loop', '-1', '-i', str(image),
              '-i', str(wav),

@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [v1.10.0] - 2026-07-14
+
 ### Added / Fixed — 跨平台（Linux / Docker）
 
 - **系统 TTS 门控**：非 Windows 禁用 PowerShell system TTS；Edge 失败不再误走 system fallback

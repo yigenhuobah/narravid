@@ -408,6 +408,21 @@ def run_tests(base_url: str, test_dir: Path, workers: int, result: TestResult):
         cancel_status, cancel_data = api_post(base_url, f'/api/cancel/{rid}')
         if cancel_status == 200:
             result.ok('发送取消请求', f'status={cancel_status}')
+            # Poll until terminal; cancel must stick (not silent success)
+            cancelled_ok = False
+            last = {}
+            for _ in range(90):
+                st_code, st = api_get(base_url, f'/api/status/{rid}')
+                last = st if isinstance(st, dict) else {}
+                if st_code == 200 and last.get('done'):
+                    if last.get('cancelled') or '取消' in str(last.get('error') or ''):
+                        cancelled_ok = True
+                    break
+                time.sleep(1)
+            if cancelled_ok:
+                result.ok('取消生效', f'progress={last.get("progress")}')
+            else:
+                result.fail('取消生效', f'终态未标记取消: {last}')
         else:
             result.fail('发送取消请求', f'status={cancel_status}')
     else:

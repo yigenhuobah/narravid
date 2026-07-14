@@ -1,11 +1,39 @@
 """Render job registry, path sandbox, and cancel helpers for WebUI."""
 from __future__ import annotations
 
+import os
 import re
+import sys
 import threading
 from pathlib import Path
 
-ROOT = Path(__file__).resolve().parent
+
+def _package_root() -> Path:
+    """Read-only package/extract root (source tree or PyInstaller _MEIPASS)."""
+    if getattr(sys, 'frozen', False):
+        meipass = getattr(sys, '_MEIPASS', None)
+        if meipass:
+            return Path(meipass)
+        return Path(sys.executable).resolve().parent
+    return Path(__file__).resolve().parent
+
+
+def _app_data_root() -> Path:
+    """Durable data root for uploads/jobs/templates.
+
+    Frozen onefile must NOT write under _MEIPASS (wiped on exit). Prefer
+    NARRAVID_DATA_DIR, else directory of the executable, else source tree.
+    """
+    env = (os.environ.get('NARRAVID_DATA_DIR') or '').strip()
+    if env:
+        return Path(env).expanduser().resolve()
+    if getattr(sys, 'frozen', False):
+        return Path(sys.executable).resolve().parent
+    return Path(__file__).resolve().parent
+
+
+PACKAGE_ROOT = _package_root()
+ROOT = _app_data_root()
 OUT_BASE = ROOT / 'rendered' / 'webui'
 UPLOAD_DIR = OUT_BASE / 'uploads'
 TEMPLATE_DIR = OUT_BASE / 'templates'
@@ -13,13 +41,27 @@ TEMPLATE_DIR = OUT_BASE / 'templates'
 for d in [OUT_BASE, UPLOAD_DIR, TEMPLATE_DIR]:
     d.mkdir(parents=True, exist_ok=True)
 
-THUMB_ALLOWED_DIRS = [UPLOAD_DIR.resolve(), (ROOT / 'examples-assets').resolve()]
+
+def _examples_asset_dirs() -> list[Path]:
+    """examples-assets may live next to data root and/or inside the package."""
+    dirs: list[Path] = []
+    for base in (ROOT, PACKAGE_ROOT):
+        p = (base / 'examples-assets').resolve()
+        if p not in dirs:
+            dirs.append(p)
+    return dirs
+
+
+THUMB_ALLOWED_DIRS = [UPLOAD_DIR.resolve(), *_examples_asset_dirs()]
 
 MAX_IMAGE_SIZE = 20 * 1024 * 1024
 MAX_VIDEO_SIZE = 60 * 1024 * 1024
 MAX_BGM_SIZE = 50 * 1024 * 1024
 MAX_UPLOAD_SIZE = 60 * 1024 * 1024
 MAX_TEMPLATE_BODY = 1 * 1024 * 1024  # PUT/POST template JSON
+# Progress stall: monitor sleeps 2s; 150 ticks ≈ 300s without progress change
+STALL_TICKS = 150
+STALL_SECONDS = STALL_TICKS * 2
 MEDIA_FILE_EXTS = {
     '.png', '.jpg', '.jpeg', '.gif', '.webp', '.bmp',
     '.mp4', '.mov', '.mkv', '.avi', '.webm', '.flv',
@@ -34,7 +76,7 @@ _ACTIVE_RENDER_LOCK = threading.Lock()
 # 渲染媒体允许目录：uploads / examples-assets / 输出树
 MEDIA_ALLOWED_DIRS = [
     UPLOAD_DIR.resolve(),
-    (ROOT / 'examples-assets').resolve(),
+    *_examples_asset_dirs(),
     OUT_BASE.resolve(),
 ]
 
@@ -196,5 +238,38 @@ def _check_edge_tts():
     except Exception:
         pass
     return 'none', '无可用 TTS（请安装 edge-tts）'
+
+
+def _public_media_url(path: Path) -> str:
+    """URL path under durable ROOT for a file we will serve via /rendered/..."""
+    rel = path.resolve().relative_to(ROOT.resolve())
+    return '/' + str(rel).replace('\\', '/')
+
+
+def _pick_final_mp4(out_dir) -> Path | None:
+    """Prefer WebUI's manifest.mp4; else newest non-underscore mp4 in job dir."""
+    od = Path(out_dir)
+    preferred = od / 'manifest.mp4'
+    if preferred.is_file():
+        return preferred
+    candidates = [
+        p for p in od.glob('*.mp4')
+        if p.is_file() and not p.name.startswith('_')
+    ]
+    if not candidates:
+        return None
+    candidates.sort(key=lambda p: (p.stat().st_mtime, p.name), reverse=True)
+    return candidates[0]
+
+
+def _systemexit_message(exc: BaseException) -> str:
+    """Human-readable failure from SystemExit raised by video_auto.main."""
+    code = getattr(exc, 'code', None)
+    if code is None or code == 0:
+        return '渲染异常退出'
+    if isinstance(code, int):
+        return f'渲染失败 (exit {code})'
+    text = str(code).strip()
+    return text or '渲染失败'
 
 

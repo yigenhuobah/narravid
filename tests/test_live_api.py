@@ -282,11 +282,50 @@ class TestLiveRenderOpsMocked(unittest.TestCase):
                     self.assertEqual(c, 200)
                     sc, st = poll_status(base, rid, timeout=20)
                     self.assertEqual(sc, 200)
-                    self.assertTrue(st.get('done') or st.get('cancelled') or st.get('error'))
-                    if st.get('cancelled') or (st.get('error') and '取消' in str(st.get('error'))):
-                        self.assertTrue(st.get('cancelled') or '取消' in str(st.get('error')))
+                    # Must be a real cancel/abort terminal — not success with video
+                    cancelled = bool(st.get('cancelled')) or (
+                        '取消' in str(st.get('error') or '') or '取消' in str(st.get('progress') or '')
+                    )
+                    self.assertTrue(
+                        cancelled,
+                        msg=f'expected cancel terminal, got {st}',
+                    )
+                    self.assertFalse(
+                        st.get('video') and not st.get('error') and not st.get('cancelled'),
+                        msg=f'cancel must not look like clean success: {st}',
+                    )
             finally:
                 self._cleanup_job('livecancelmid', path)
+
+    def test_systemexit_from_main_is_failure(self):
+        """SystemExit from video_auto.main must not present as empty success."""
+        with live_webui() as base:
+            path = self._upload_png(base)
+
+            def boom(_argv=None):
+                raise SystemExit('错误: 无可用 TTS 引擎')
+
+            try:
+                with mock.patch('video_auto.main', boom):
+                    code, data = http_json('POST', base + '/api/render', {
+                        'render_id': 'livesysexit',
+                        'manifest': {
+                            'workers': 1,
+                            'burn_subtitles': False,
+                            'scenes': [{'image': path, 'text': 'x', 'hold_sec': 0.1}],
+                        },
+                    })
+                    self.assertEqual(code, 200)
+                    rid = data['render_id']
+                    sc, st = poll_status(base, rid, timeout=20)
+                    self.assertEqual(sc, 200)
+                    self.assertTrue(st.get('done'))
+                    self.assertTrue(st.get('error'), msg=f'expected error, got {st}')
+                    self.assertIn('TTS', str(st.get('error')))
+                    self.assertFalse(st.get('video'))
+                    self.assertFalse(st.get('cancelled'))
+            finally:
+                self._cleanup_job('livesysexit', path)
 
     def test_late_cancel_after_success_keeps_video(self):
         with live_webui() as base:

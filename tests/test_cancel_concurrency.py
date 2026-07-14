@@ -156,12 +156,12 @@ class TestActiveRenderScoping(unittest.TestCase):
         j = {
             'done': True,
             'cancelled': False,
-            'error': '渲染超时：180 秒无进度更新',
+            'error': f'渲染超时：{webui.STALL_SECONDS} 秒无进度更新',
             'progress': '超时（渲染卡死）',
             'video': '',
         }
         self.assertFalse(webui._mark_job_cancelled(j))
-        self.assertEqual(j['error'], '渲染超时：180 秒无进度更新')
+        self.assertEqual(j['error'], f'渲染超时：{webui.STALL_SECONDS} 秒无进度更新')
         self.assertFalse(j.get('cancelled'))
 
 

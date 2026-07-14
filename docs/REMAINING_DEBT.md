@@ -1,6 +1,6 @@
 # 剩余技术债（诚实清单）
 
-更新于 2026-07-14（v1.10.3 + PR#6 合入后）。只列**仍未做完**、且有业务/安全含义的项。
+更新于 2026-07-14（深度扫描 critical 修复后）。只列**仍未做完**、且有业务/安全含义的项。
 
 ## 仍值得做
 
@@ -44,6 +44,9 @@
 - late-cancel 抹视频、hold/hold_sec 双字段主路径、sys.argv 污染渲染  
 - health 裸名 ffmpeg 假阳性、HEAD 泄露、export 任意 OUT_BASE 日志  
 - 模块拆分 webui_jobs/ui、Ruff CI、跨平台 Edge/字体/killpg  
+- **SystemExit 假成功**、**frozen `_MEIPASS` 写数据**、MP3→`.wav` 误拷、字典序选 mp4  
+- BGM `-shortest` 截尾、ffprobe 不可取消、CLI 缺 matplotlib collect、stall 180s 误杀  
+- 取消 live/E2E 只验 HTTP 200 的假绿（已收紧断言）  
 
 ## 给下一任的优先级建议
 

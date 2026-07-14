@@ -28,8 +28,11 @@ from webui_jobs import (  # re-export for tests / external importers
     MAX_UPLOAD_SIZE,
     MAX_VIDEO_SIZE,
     OUT_BASE,
+    PACKAGE_ROOT,
     RENDER_LOCK,
     ROOT,
+    STALL_SECONDS,
+    STALL_TICKS,
     TEMPLATE_DIR,
     THUMB_ALLOWED_DIRS,
     UPLOAD_DIR,
@@ -42,15 +45,19 @@ from webui_jobs import (  # re-export for tests / external importers
     _job_out_dir,
     _looks_like_cancel,
     _mark_job_cancelled,
+    _pick_final_mp4,
+    _public_media_url,
     _resolve_media_path,
     _sanitize_render_id,
     _sanitize_upload_name,
     _set_active_render,
     _signal_cancel_token_if_active,
+    _systemexit_message,
 )
 from webui_ui import HTML
 
-SCRIPT = ROOT / 'video_auto.py'
+# video_auto.py lives in package root (source tree or frozen extract dir)
+SCRIPT = PACKAGE_ROOT / 'video_auto.py'
 
 def _write_b64_to_file(b64: str, dest: Path, max_bytes: int) -> int:
     """Decode base64 in chunks to dest; enforce max_bytes. Returns size written."""
@@ -208,14 +215,14 @@ class WebUIHandler(SimpleHTTPRequestHandler):
                             try:
                                 od = Path(out_dir).resolve()
                                 if _is_under(od, OUT_BASE):
-                                    mp4s = sorted(od.glob('*.mp4'))
-                                    if mp4s:
-                                        video = '/' + str(mp4s[0].relative_to(ROOT)).replace('\\', '/')
+                                    mp4 = _pick_final_mp4(od)
+                                    if mp4:
+                                        video = _public_media_url(mp4)
                                         j['video'] = video
                                         if not j.get('srt'):
-                                            srt_p = mp4s[0].with_suffix('.srt')
+                                            srt_p = mp4.with_suffix('.srt')
                                             if srt_p.is_file():
-                                                j['srt'] = '/' + str(srt_p.relative_to(ROOT)).replace('\\', '/')
+                                                j['srt'] = _public_media_url(srt_p)
                             except Exception:
                                 pass
                     resp['video'] = video
@@ -461,10 +468,16 @@ class WebUIHandler(SimpleHTTPRequestHandler):
                     _burn = bool(_bs) if _bs is not None else True
             if not _burn:
                 cmd += ['--no-burn']
-            # 字幕样式
+            # 字幕样式（sanitize 后再下发，避免 force_style 注入）
             ss = m.get('subtitle_style')
             if ss and isinstance(ss, str) and len(ss) < 500:
-                cmd += ['--subtitle-style', ss]
+                try:
+                    import video_auto as _va_ss
+                    ss = _va_ss.sanitize_subtitle_style(ss)
+                except Exception:
+                    ss = re.sub(r"[\\'\"\[\]:;|]", '', ss).strip()
+                if ss:
+                    cmd += ['--subtitle-style', ss]
             engine = m.get('tts_engine')
             if engine and engine in ('edge', 'system'):
                 cmd += ['--engine', engine]
@@ -532,13 +545,40 @@ class WebUIHandler(SimpleHTTPRequestHandler):
                                 # 有其它 prior error 时保留 error，进度标取消
                                 j['progress'] = j.get('progress') or '已取消'
                         else:
-                            mp4s = sorted(out.glob('*.mp4'))
-                            if mp4s:
-                                j['video'] = '/' + str(mp4s[0].relative_to(ROOT)).replace('\\', '/')
-                                srt_p = mp4s[0].with_suffix('.srt')
+                            mp4 = _pick_final_mp4(out)
+                            if mp4:
+                                j['video'] = _public_media_url(mp4)
+                                srt_p = mp4.with_suffix('.srt')
                                 if srt_p.is_file():
-                                    j['srt'] = '/' + str(srt_p.relative_to(ROOT)).replace('\\', '/')
-                            j['progress'] = '完成'
+                                    j['srt'] = _public_media_url(srt_p)
+                                j['progress'] = '完成'
+                            else:
+                                j['error'] = j.get('error') or '渲染结束但未生成视频'
+                                j['progress'] = '失败: 未生成视频'
+                    except SystemExit as e:
+                        # video_auto.main converts some fatal errors to SystemExit;
+                        # must not fall through as false success (empty video/error).
+                        import traceback
+                        tb = traceback.format_exc()
+                        err_file = out / '_stderr.log'
+                        try:
+                            out.mkdir(parents=True, exist_ok=True)
+                            err_file.write_text(tb, encoding='utf-8', errors='ignore')
+                        except Exception:
+                            pass
+                        msg = _systemexit_message(e)
+                        prior = (j.get('error') or '').strip()
+                        if prior.startswith('渲染超时'):
+                            j['progress'] = j.get('progress') or '超时（渲染卡死）'
+                        elif j.get('cancelled') or _looks_like_cancel(msg):
+                            j['cancelled'] = True
+                            j['error'] = prior or '已取消'
+                            j['progress'] = '已取消'
+                        elif prior:
+                            j['progress'] = j.get('progress') or f'失败: {msg}'[:200]
+                        else:
+                            j['error'] = msg[-500:]
+                            j['progress'] = f'失败: {msg}'[:200]
                     except Exception as e:
                         import traceback
                         tb = traceback.format_exc()
@@ -612,9 +652,9 @@ class WebUIHandler(SimpleHTTPRequestHandler):
                     else:
                         stall_count = 0
                         last_progress = current_progress
-                    # 连续 90 次（约 180 秒）无进度更新则判定卡死（弱网 Edge TTS 需要更长时间）
-                    if stall_count >= 90:
-                        j['error'] = '渲染超时：180 秒无进度更新'
+                    # 连续 STALL_TICKS 次（默认约 300 秒）无进度更新则判定卡死
+                    if stall_count >= STALL_TICKS:
+                        j['error'] = f'渲染超时：{STALL_SECONDS} 秒无进度更新'
                         j['progress'] = '超时（渲染卡死）'
                         j['done'] = True
                         # 仅打断当前真正在跑的任务；排队中的 job 超时不应误杀持锁渲染

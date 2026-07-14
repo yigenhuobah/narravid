@@ -1,12 +1,16 @@
 """Layer 1 — pure unit tests (no ffmpeg/network). Fast gate for every commit."""
 from __future__ import annotations
 
+import os
 import tempfile
+import time
 import unittest
 from pathlib import Path
+from unittest import mock
 
 import video_auto
 import webui
+import webui_jobs
 from tests.support import ROOT, write_tiny_png
 
 
@@ -207,7 +211,7 @@ class TestTimeoutCancelErrorPriority(unittest.TestCase):
                 j['progress'] = f'失败: {msg}'[:200]
             return j
 
-        j = classify('渲染超时：180 秒无进度更新', True, '渲染已被用户取消')
+        j = classify(f'渲染超时：{webui.STALL_SECONDS} 秒无进度更新', True, '渲染已被用户取消')
         self.assertTrue(j['error'].startswith('渲染超时'))
         self.assertEqual(j['progress'], '超时（渲染卡死）')
 
@@ -218,7 +222,7 @@ class TestTimeoutCancelErrorPriority(unittest.TestCase):
         """Mirror run_in_thread success branch when mon already timed out."""
         j = {
             'cancelled': True,
-            'error': '渲染超时：180 秒无进度更新',
+            'error': f'渲染超时：{webui.STALL_SECONDS} 秒无进度更新',
             'progress': '超时（渲染卡死）',
         }
         if j.get('cancelled') or j.get('error'):
@@ -272,7 +276,108 @@ class TestHoldSecNormalize(unittest.TestCase):
     def test_normalize_requires_image(self):
         with self.assertRaises(ValueError):
             video_auto.normalize_manifest({'scenes': [{'text': 'x', 'hold': 1}]})
+
+
+class TestSubtitleStyleSanitize(unittest.TestCase):
+    def test_strips_filter_injection_chars(self):
+        dirty = "FontName=Arial,FontSize=16';force_style='evil':[x]"
+        clean = video_auto.sanitize_subtitle_style(dirty)
+        for ch in "\\'\"[]:;|":
+            self.assertNotIn(ch, clean)
+        self.assertIn('FontName=Arial', clean)
+        filt = video_auto.subtitle_filter_arg(Path('x.srt'), dirty)
+        self.assertIn("force_style='", filt)
+        # no nested single quotes from injection
+        self.assertEqual(filt.count("force_style='"), 1)
+
+    def test_empty_falls_back_to_default(self):
+        d = video_auto.default_subtitle_style()
+        self.assertEqual(video_auto.sanitize_subtitle_style(''), d)
+        self.assertEqual(video_auto.sanitize_subtitle_style(None), d)
+
+
+class TestPickFinalMp4AndSystemExit(unittest.TestCase):
+    def test_pick_prefers_manifest_mp4(self):
+        with tempfile.TemporaryDirectory() as td:
+            od = Path(td)
+            (od / 'aaa.mp4').write_bytes(b'a')
+            (od / 'manifest.mp4').write_bytes(b'm')
+            (od / '_tmp.mp4').write_bytes(b't')
+            picked = webui._pick_final_mp4(od)
+            self.assertEqual(picked.name, 'manifest.mp4')
+
+    def test_pick_skips_underscore_and_uses_newest(self):
+        with tempfile.TemporaryDirectory() as td:
+            od = Path(td)
+            older = od / 'older.mp4'
+            newer = od / 'newer.mp4'
+            older.write_bytes(b'o')
+            time.sleep(0.02)
+            newer.write_bytes(b'n')
+            (od / '_partial.mp4').write_bytes(b'p')
+            picked = webui._pick_final_mp4(od)
+            self.assertEqual(picked.name, 'newer.mp4')
+
+    def test_systemexit_message(self):
+        self.assertIn('错误', webui._systemexit_message(SystemExit('错误: no tts')))
+        self.assertIn('exit 2', webui._systemexit_message(SystemExit(2)))
+        self.assertEqual(webui._systemexit_message(SystemExit(None)), '渲染异常退出')
+
+
+class TestProcessAudioNoMislabelCopy(unittest.TestCase):
+    def test_mismatched_suffix_does_not_byte_copy(self):
+        """Edge MP3 → .wav must re-encode, not shutil.copyfile."""
+        with tempfile.TemporaryDirectory() as td:
+            raw = Path(td) / 'raw.mp3'
+            out = Path(td) / '001.wav'
+            raw.write_bytes(b'ID3fake-mp3-payload-not-wav')
+            calls = []
+
+            def fake_run(cmd, silent=False):
+                calls.append(list(cmd))
+                # write a tiny wav-like placeholder so duration probe can run
+                Path(cmd[-1]).write_bytes(b'RIFF....WAVEfmt ')
+
+            with mock.patch.object(video_auto, 'ffprobe_duration', return_value=1.0):
+                with mock.patch.object(video_auto, 'run', side_effect=fake_run):
+                    with mock.patch.object(video_auto, 'shutil') as sh:
+                        video_auto.process_audio(raw, out, speed=1.0, pad_sec=0.0)
+                        sh.copyfile.assert_not_called()
+            self.assertTrue(calls)
+            self.assertEqual(str(calls[0][-1]), str(out))
+
+    def test_same_suffix_no_filter_byte_copies(self):
+        with tempfile.TemporaryDirectory() as td:
+            raw = Path(td) / 'a.wav'
+            out = Path(td) / 'b.wav'
+            raw.write_bytes(b'RIFFWAVDATA')
+            with mock.patch.object(video_auto, 'ffprobe_duration', return_value=0.5):
+                with mock.patch.object(video_auto, 'run') as run_mock:
+                    dur = video_auto.process_audio(raw, out, speed=1.0, pad_sec=0.0)
+                    run_mock.assert_not_called()
+            self.assertEqual(dur, 0.5)
+            self.assertEqual(out.read_bytes(), b'RIFFWAVDATA')
+
+
+class TestFrozenDataRoot(unittest.TestCase):
+    def test_app_data_root_uses_exe_dir_when_frozen(self):
+        fake_exe = Path(tempfile.gettempdir()) / 'narravid-webui-fake.exe'
+        with mock.patch.object(webui_jobs.sys, 'frozen', True, create=True):
+            with mock.patch.object(webui_jobs.sys, 'executable', str(fake_exe)):
+                with mock.patch.dict(os.environ, {}, clear=False):
+                    os.environ.pop('NARRAVID_DATA_DIR', None)
+                    root = webui_jobs._app_data_root()
+        self.assertEqual(root, fake_exe.parent.resolve())
+
+    def test_app_data_root_env_override(self):
+        with tempfile.TemporaryDirectory() as td:
+            with mock.patch.dict(os.environ, {'NARRAVID_DATA_DIR': td}):
+                root = webui_jobs._app_data_root()
+            self.assertEqual(root, Path(td).resolve())
+
+
 if __name__ == '__main__':
     unittest.main()
+
 
 

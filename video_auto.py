@@ -20,6 +20,7 @@ narravid — 图片 + JSON 文案 → 解说视频，一键自动生成。
 import argparse
 import json
 import os
+import re
 import shutil
 import signal
 import subprocess
@@ -151,11 +152,50 @@ def run(cmd, silent=False):
 
 
 def ffprobe_duration(path: Path) -> float:
-    out = subprocess.check_output([
+    """Probe media duration; registered so CancelToken can kill a hung probe."""
+    _check_cancel()
+    cmd = [
         FFPROBE, '-v', 'error', '-show_entries', 'format=duration',
-        '-of', 'default=noprint_wrappers=1:nokey=1', str(path)
-    ], text=True, encoding='utf-8', timeout=60).strip()
-    return float(out)
+        '-of', 'default=noprint_wrappers=1:nokey=1', str(path),
+    ]
+    kwargs = {
+        'stdout': subprocess.PIPE,
+        'stderr': subprocess.DEVNULL,
+        'text': True,
+        'encoding': 'utf-8',
+    }
+    if os.name != 'nt':
+        kwargs['start_new_session'] = True
+    proc = subprocess.Popen(cmd, **kwargs)
+    with _ACTIVE_PROCS_LOCK:
+        _ACTIVE_PROCS.append(proc)
+    try:
+        deadline = time.time() + 60
+        while True:
+            try:
+                out, _ = proc.communicate(timeout=0.4)
+                break
+            except subprocess.TimeoutExpired:
+                if CancelToken.is_cancelled():
+                    _kill_process(proc)
+                    try:
+                        proc.wait(timeout=5)
+                    except Exception:
+                        pass
+                    _check_cancel()
+                    raise RuntimeError('渲染已中止')
+                if time.time() >= deadline:
+                    _kill_process(proc)
+                    raise subprocess.TimeoutExpired(cmd, 60)
+        if proc.returncode != 0:
+            raise subprocess.CalledProcessError(proc.returncode, cmd)
+        return float((out or '').strip())
+    finally:
+        with _ACTIVE_PROCS_LOCK:
+            try:
+                _ACTIVE_PROCS.remove(proc)
+            except ValueError:
+                pass
 
 
 def atempo_filter_chain(speed: float) -> list:
@@ -277,6 +317,16 @@ def default_subtitle_style() -> str:
     return _SUBTITLE_STYLE_CACHE
 
 
+def sanitize_subtitle_style(style: str | None) -> str:
+    """Strip characters that break ffmpeg force_style='...' quoting / filter graph."""
+    if not style:
+        return default_subtitle_style()
+    # force_style is single-quoted; ban quote/backslash and filter separators
+    cleaned = re.sub(r"[\\'\"\[\]:;|]", '', str(style))
+    cleaned = cleaned.replace('\n', ' ').replace('\r', ' ').strip()
+    return cleaned or default_subtitle_style()
+
+
 def subtitle_filter_arg(srt_path: Path, style_override: str = None) -> str:
     # ffmpeg subtitles filter 路径转义规则：
     #   路径用单引号包裹，内部特殊字符用 \ 转义：: \ ' [ ]
@@ -284,7 +334,7 @@ def subtitle_filter_arg(srt_path: Path, style_override: str = None) -> str:
     #   所以路径含单引号时改用 filename 选项避免问题
     path = str(srt_path.resolve()).replace('\\', '/')
     has_apostrophe = "'" in path
-    style = style_override or default_subtitle_style()
+    style = sanitize_subtitle_style(style_override)
     if has_apostrophe:
         # 含单引号的路径：使用 filename= 选项，用双引号包裹
         # 双引号内需要转义：\ : "
@@ -540,16 +590,21 @@ def synthesize_audio_with_retry(text: str, raw_audio_path: Path, engine: str, vo
 # ── audio processing ────────────────────────────────────────────
 
 def process_audio(raw_audio_path: Path, out_path: Path, speed: float, pad_sec: float):
+    """Normalize scene audio to 24k mono WAV (or same-container copy only when safe)."""
     source_duration = ffprobe_duration(raw_audio_path)
     filters = atempo_filter_chain(speed)
     if pad_sec > 0:
         filters.append(f'apad=pad_dur={pad_sec:.3f}')
-    if not filters:
+    src_suf = Path(raw_audio_path).suffix.lower()
+    dst_suf = Path(out_path).suffix.lower()
+    # Same container + no filters: byte-copy is safe. Never copy MP3/etc onto .wav.
+    if not filters and src_suf == dst_suf:
         shutil.copyfile(raw_audio_path, out_path)
         return source_duration
-    # atempo 可链式（单段仅 0.5–2.0）；apad 补尾静音，不用 -t 硬截断以免切尾音
+    # Always re-encode when filters apply or container would mismatch (Edge TTS → .wav)
+    af = ','.join(filters) if filters else 'anull'
     run([FFMPEG, '-y', '-i', str(raw_audio_path),
-         '-af', ','.join(filters),
+         '-af', af,
          '-ar', '24000', '-ac', '1',
          str(out_path)], silent=True)
     return ffprobe_duration(out_path)
@@ -1142,7 +1197,14 @@ def main(argv=None):
     voice = args.voice or manifest.get('voice') or (DEFAULT_EDGE_VOICE if tts_engine == 'edge' else DEFAULT_SYSTEM_VOICE)
     rate = _safe_int(manifest.get('rate', 0), 0, 'rate')
     volume = _safe_int(manifest.get('volume', 100), 100, 'volume')
-    speech_speed = args.speed or _safe_float(manifest.get('speech_speed', DEFAULT_SPEECH_SPEED), DEFAULT_SPEECH_SPEED, 'speech_speed')
+    if args.speed is not None:
+        speech_speed = float(args.speed)
+    else:
+        speech_speed = _safe_float(
+            manifest.get('speech_speed', DEFAULT_SPEECH_SPEED),
+            DEFAULT_SPEECH_SPEED,
+            'speech_speed',
+        )
     if speech_speed < 0.5:
         print(f'  [warn] 语速 {speech_speed} 过低，已调整为 0.5')
         speech_speed = 0.5
@@ -1204,6 +1266,8 @@ def main(argv=None):
     subtitle_style = args.subtitle_style or manifest.get('subtitle_style') or None
     if subtitle_style is not None and not isinstance(subtitle_style, str):
         subtitle_style = None
+    if subtitle_style:
+        subtitle_style = sanitize_subtitle_style(subtitle_style)
     card_bg = args.title_card_bg or manifest.get('title_card_bg') or '#1a1a2e'
     smart_comma = not args.no_smart_comma
     if 'smart_comma' in manifest and not args.no_smart_comma:
@@ -1437,9 +1501,14 @@ def main(argv=None):
             except Exception:
                 pass
         tmp_video = tmp_dir / 'video_no_audio.mp4'
+        # Do not use -shortest: mixed audio slightly shorter than video would
+        # truncate hold/tail. Pad audio to video length instead.
         run([FFMPEG, '-y', '-i', str(final_mp4), '-i', str(mixed_audio),
-             '-c:v', 'copy', '-c:a', 'aac', '-b:a', '192k', '-map', '0:v:0', '-map', '1:a:0',
-             '-shortest', str(tmp_video)], silent=True)
+             '-filter_complex', '[1:a]apad[a]',
+             '-c:v', 'copy', '-c:a', 'aac', '-b:a', '192k',
+             '-map', '0:v:0', '-map', '[a]',
+             '-t', str(ffprobe_duration(final_mp4)),
+             str(tmp_video)], silent=True)
         shutil.move(str(tmp_video), str(final_mp4))
         print('OK')
 

@@ -36,6 +36,7 @@ jobs:
           --hidden-import edge_tts
           --hidden-import _bundled_ffmpeg
           --collect-all edge_tts
+          --collect-all matplotlib
           video_auto.py
 
       - name: Build WebUI exe

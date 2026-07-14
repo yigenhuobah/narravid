@@ -19,6 +19,7 @@ python run_tests.py --fast
 | `NARRAVID_FONT` | 中文字体文件 |
 | `NARRAVID_FFMPEG` / `NARRAVID_FFPROBE` | 覆盖二进制路径 |
 | `NARRAVID_PROGRESS_FILE` | 进度文件（WebUI 自动设） |
+| `NARRAVID_DATA_DIR` | WebUI 可写数据根（uploads/jobs/templates）；**frozen exe 默认写在 exe 同目录**，勿用 `_MEIPASS` |
 
 ## Docker（单用户）
 
@@ -56,8 +57,10 @@ curl -s http://127.0.0.1:5000/api/health | jq .
 | 有 BGM 设置但听不到 | status `warning` / `_warnings.txt` |
 | 取消不掉 | 是否已成功终态（会 ignored）；是否在排队 |
 | 导入 zip 失败 | 条目数、解压大小、路径穿越、无 manifest |
+| exe 重启后 uploads/成片消失 | 旧版写进 `_MEIPASS`；升级后数据在 exe 旁 `rendered/webui/` 或 `NARRAVID_DATA_DIR` |
+| 长编码被标「渲染超时」 | 默认约 300s 无进度心跳；进度文件应持续被 pipeline 更新 |
 
-Job 目录：`rendered/webui/<render_id>/`  
+Job 目录：`rendered/webui/<render_id>/`（相对 `NARRAVID_DATA_DIR` 或源码/exe 根） 
 上传：`rendered/webui/uploads/`  
 模板：`rendered/webui/templates/`
 

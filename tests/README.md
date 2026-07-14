@@ -23,12 +23,23 @@ python run_tests.py --list
 
 | Layer | Module(s) | Needs | Purpose |
 |-------|-----------|-------|---------|
-| `unit` | `test_unit_helpers` | nothing | atempo, SRT, bool/duration parse, CancelToken, path helpers |
-| `security` | `test_security_http` | nothing | `/rendered`, upload, render_id, export/import, zip slip |
-| `cancel` | `test_cancel_concurrency` | nothing | fail-fast labeling, kill-on-cancel, active render |
-| `live` | `test_live_api` | free port | real `ThreadingHTTPServer` smoke (no full TTS) |
+| `unit` | `test_unit_helpers`, `test_platform` | nothing | atempo, SRT, CancelToken, path helpers, **cross-platform** (fonts/TTS/kill/ffmpeg names) |
+| `security` | `test_security_http` | nothing | `/rendered`, upload, render_id, export/import, zip slip, late-cancel, srt backfill |
+| `cancel` | `test_cancel_concurrency` | nothing | fail-fast labeling, kill-on-cancel, active render, frontend UX markers |
+| `live` | `test_live_api` | free port | real `ThreadingHTTPServer` ops (render mocked; no Edge TTS) |
 | `pipeline` | `test_pipeline_ffmpeg` | ffmpeg | `process_audio`, hold-only CLI smoke |
 | `legacy` | `test_regressions.py`, `_verify_fix.py` | — | older ad-hoc checks kept for continuity |
+
+### What `live` covers (mocked render)
+
+Uses `tests.support.fake_video_auto_main` so lifecycle is fast/offline:
+
+- upload (incl. Chinese filename ASCII), BGM list, thumb allow/deny
+- fake render → status `video`/`srt` → download
+- mid-render cancel, **late cancel keeps video**
+- serial `RENDER_LOCK` (two jobs)
+- export/import roundtrip, bad zip 400
+- templates CRUD with `bgm` / card durations, clean API
 
 ## Full product E2E
 
@@ -39,7 +50,11 @@ python test_e2e.py
 python test_e2e.py --port 5001 --workers 2 --keep
 ```
 
+`test_e2e.py` also covers templates, export/import, late-cancel, clean (in addition to full TTS render).
+
 `run_tests.py --max` does **not** replace `test_e2e.py`; it is the fast/medium gate for day-to-day development. Run e2e before release.
+
+Local scratch scripts (`_ux_ops_test.py`, `_ux_fix_verify.py`, `_test_*.py`) are optional/manual and not part of the suite.
 
 ## Layout
 
@@ -73,3 +88,14 @@ test_e2e.py               # full WebUI e2e
 | Every edit | `python run_tests.py --fast` |
 | Before push | `python run_tests.py` |
 | Before release / tag | `python run_tests.py --max` then `python test_e2e.py` |
+
+## Platform notes
+
+| Layer | Windows | Linux |
+|-------|---------|-------|
+| `--fast` / default | ✅ | ✅ (no system TTS required) |
+| `pipeline` | needs ffmpeg | `apt install ffmpeg` |
+| `test_e2e.py` | Edge + ffmpeg | Edge + ffmpeg; **do not** use `--engine system` |
+| System TTS | PowerShell | unsupported by design |
+
+Linux CI: `.github/workflows/test-linux.yml` installs `ffmpeg` + `fonts-noto-cjk` and runs `run_tests.py`.

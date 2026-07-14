@@ -135,9 +135,34 @@ class TestActiveRenderScoping(unittest.TestCase):
 
     def test_mark_cancelled(self):
         j = {'error': '', 'done': False}
-        webui._mark_job_cancelled(j)
+        self.assertTrue(webui._mark_job_cancelled(j))
         self.assertTrue(j['cancelled'] and j['done'])
         self.assertEqual(j['error'], '已取消')
+
+    def test_mark_cancelled_ignores_finished_success(self):
+        j = {
+            'done': True,
+            'cancelled': False,
+            'video': '/rendered/webui/x/manifest.mp4',
+            'progress': '完成',
+            'error': '',
+        }
+        self.assertFalse(webui._mark_job_cancelled(j))
+        self.assertFalse(j.get('cancelled'))
+        self.assertEqual(j['video'], '/rendered/webui/x/manifest.mp4')
+        self.assertEqual(j['progress'], '完成')
+
+    def test_mark_cancelled_ignores_finished_failure(self):
+        j = {
+            'done': True,
+            'cancelled': False,
+            'error': '渲染超时：180 秒无进度更新',
+            'progress': '超时（渲染卡死）',
+            'video': '',
+        }
+        self.assertFalse(webui._mark_job_cancelled(j))
+        self.assertEqual(j['error'], '渲染超时：180 秒无进度更新')
+        self.assertFalse(j.get('cancelled'))
 
 
 class TestFrontendGateMarkers(unittest.TestCase):
@@ -147,6 +172,38 @@ class TestFrontendGateMarkers(unittest.TestCase):
         self.assertIn('userCancelled', src)
         self.assertIn('if(rid!==pollRid||userCancelled)return', src)
         self.assertIn('function cancel()', src)
+        # 模板应持久化 BGM 与片头片尾时长
+        self.assertIn('bgm:E(\'bgmSel\').value', src)
+        self.assertIn('card_duration:E(\'tcd\').value', src)
+        self.assertIn('end_card_duration:E(\'ecd\').value', src)
+        self.assertIn('thumb-ph', src)
+        self.assertIn('已跳过', src)
+        self.assertIn('MAX_IMPORT_ZIP', src)
+
+    def test_html_ux_ops_markers(self):
+        """Static markers for real-user ops fixed in UX pass."""
+        from pathlib import Path
+        src = Path('webui.py').read_text(encoding='utf-8')
+        # speech speed range matches backend 0.5–3.0
+        self.assertIn('id="sp" min="0.5" max="3.0"', src)
+        # clean confirm
+        clean = src.split('async function cleanOld', 1)[1].split('document.addEventListener', 1)[0]
+        self.assertIn('confirm(', clean)
+        # import size aligned with base64 body limit
+        self.assertIn('MAX_IMPORT_ZIP=40*1024*1024', src)
+        # empty scene placeholder not a perpetual spinner
+        self.assertIn('thumb-ph', src)
+        self.assertIn("inner='<div class=\"thumb-ph\"", src)
+        # render skips unuploaded scenes with toast
+        self.assertIn('已跳过', src)
+        # loadTemplate restores durations + bgm
+        load = src.split('async function loadTemplate', 1)[1].split('async function delTemplate', 1)[0]
+        self.assertIn('card_duration', load)
+        self.assertIn('end_card_duration', load)
+        self.assertIn('t.bgm', load)
+        # cancel API ignores finished jobs; bad zip is 400
+        self.assertIn('ignored', src)
+        self.assertIn('不是有效的 zip 工程文件', src)
 
 
 if __name__ == '__main__':

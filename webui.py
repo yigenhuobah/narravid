@@ -97,6 +97,9 @@ body{font-family:"Microsoft YaHei","PingFang SC","Noto Sans SC",sans-serif;backg
 .scene .thumb:hover::after{content:'🔍';position:absolute;inset:0;background:rgba(0,0,0,.55);color:#fff;font-size:22px;display:flex;align-items:center;justify-content:center;z-index:2}
 .scene .thumb .loader{width:20px;height:20px;border:2px solid var(--border2);border-top-color:var(--accent);border-radius:50%;animation:sp .6s linear infinite}
 .scene .thumb.has-img .loader{display:none}
+.scene .thumb .thumb-ph{color:var(--muted);font-size:28px;font-weight:300;line-height:1;user-select:none}
+.scene .thumb:not(.has-img){cursor:pointer}
+.scene .thumb:not(.has-img):hover::after{content:none}
 .scene .body{flex:1;display:flex;flex-direction:column;gap:8px;min-width:0}
 .scene textarea{width:100%;font-size:14px;padding:10px 12px;border:1px solid var(--border2);border-radius:8px;background:var(--surface2);color:var(--ink);resize:vertical;min-height:56px;font-family:inherit;line-height:1.5;outline:none;transition:.15s}
 .scene textarea:focus{border-color:var(--accent);background:rgba(36,36,58,.8)}
@@ -215,7 +218,7 @@ body{font-family:"Microsoft YaHei","PingFang SC","Noto Sans SC",sans-serif;backg
     <div class="field">
       <label>语速</label>
       <div class="range-row">
-        <input type="range" id="sp" min="0.8" max="2.2" step="0.05" value="1.5">
+        <input type="range" id="sp" min="0.5" max="3.0" step="0.05" value="1.5">
         <span class="val" id="sv">1.5x</span>
       </div>
     </div>
@@ -289,12 +292,14 @@ body{font-family:"Microsoft YaHei","PingFang SC","Noto Sans SC",sans-serif;backg
       <div class="field">
         <label>字体</label>
         <select id="ssFont">
-          <option value="Microsoft YaHei" selected>微软雅黑</option>
+          <option value="Microsoft YaHei">微软雅黑</option>
           <option value="SimHei">黑体</option>
           <option value="SimSun">宋体</option>
           <option value="KaiTi">楷体</option>
-          <option value="Noto Sans SC">思源黑体</option>
+          <option value="Noto Sans SC">思源黑体 / Noto</option>
+          <option value="Noto Sans CJK SC">Noto Sans CJK SC</option>
           <option value="PingFang SC">苹方</option>
+          <option value="WenQuanYi Micro Hei">文泉驿微米黑</option>
         </select>
       </div>
       <div class="field">
@@ -394,7 +399,13 @@ function toast(msg,type){
 }
 
 /* ── 字幕样式编辑器 ── */
-const SUB_DEFAULT={font:'Microsoft YaHei',size:16,color:'FFFFFF',outlineColor:'000000',outline:1,margin:30,align:2,bold:false};
+function defaultSubFont(){
+  const p=navigator.platform||'';
+  if(/Win/i.test(p))return 'Microsoft YaHei';
+  if(/Mac/i.test(p))return 'PingFang SC';
+  return 'Noto Sans CJK SC';
+}
+const SUB_DEFAULT={font:defaultSubFont(),size:16,color:'FFFFFF',outlineColor:'000000',outline:1,margin:30,align:2,bold:false};
 let subStyle={...SUB_DEFAULT};
 
 /* ASS/libass 颜色为 &HAABBGGRR（BGR），UI 拾色器是 RRGGBB，需交换 R/B */
@@ -496,6 +507,8 @@ function init(){
   E('sp').oninput=()=>E('sv').textContent=parseFloat(E('sp').value).toFixed(2)+'x';
   E('bvol').oninput=()=>E('bv').textContent=Math.round(parseFloat(E('bvol').value)*100)+'%';
   E('bgmFile').onchange=uploadBGM;
+  // 按平台默认字幕字体选中对应 option（无则保留列表第一项语义由 subStyle 决定）
+  try{E('ssFont').value=subStyle.font}catch(e){}
   bindSubStyleControls();
   updateSubPreview();
   add();add();add();
@@ -506,8 +519,9 @@ async function checkTTS(){
   try{
     let r=await fetch('/api/tts-check');if(!r.ok)return;
     let d=await r.json();
-    ttsEngine=d.engine||'system';
-  document.querySelectorAll('.header .sub').forEach(el=>{el.textContent+=el.textContent?' · ':'';el.textContent+=d.label||''});
+    ttsEngine=(d.engine==='none'||!d.engine)?'edge':d.engine;
+    document.querySelectorAll('.header .sub').forEach(el=>{el.textContent+=el.textContent?' · ':'';el.textContent+=d.label||''});
+    if(d.engine==='none'){toast(d.label||'无可用 TTS，请安装 edge-tts','warn')}
   }catch(e){}
 }
 
@@ -665,14 +679,14 @@ function pain(){
     }else if(s._loading){
       inner='<div class="loader"></div>';
     }else{
-      inner='<div class="loader"></div>';
+      inner='<div class="thumb-ph" title="点击换图上传">+</div>';
     }
     let nm=s._name||(s.image?s.image.split('/').pop().split('\\').pop():'');
     let pathCls='path'+(s._error?' err':'');
     h+='<div class="scene" draggable="true" ondragstart="dragS('+i+',event)" ondragover="event.preventDefault();dragEnter('+i+')" ondragleave="dragLV()" ondrop="dropS('+i+',event)">'
       +'<div class="grip" title="拖拽排序">⠿</div>'
       +'<div class="idx">#'+(i+1)+'</div>'
-      +'<div class="'+cls+'" onclick="lightbox('+i+')">'+inner+'</div>'
+      +'<div class="'+cls+'" onclick="'+(hasImg?'lightbox('+i+')':'chImg('+i+')')+'">'+inner+'</div>'
       +'<div class="body">'
         +'<textarea placeholder="输入解说文案（按句自动切字幕，逗号长句智能断句）" oninput="S['+i+'].text=this.value">'+esc(s.text)+'</textarea>'
         +'<div class="foot">'
@@ -708,12 +722,15 @@ async function render(){
   let valid=S.filter(s=>s.image);
   if(!valid.length){alert('请至少添加一张图片');return}
   if(uploading>0){alert('还有图片在上传中，请稍候');return}
+  let skipped=S.length-valid.length;
+  if(skipped>0){toast('已跳过 '+skipped+' 个未上传媒体的场景','warn')}
   let bgm=E('bgmSel').value||null;
   let res=(E('res').value||'1920x1080').split('x');
   let subStyleStr=buildSubStyleStr();
   let m={title:'narravid',width:parseInt(res[0]),height:parseInt(res[1]),tts_engine:ttsEngine,workers:parseInt(E('wk').value),
     voice:E('v').value,speech_speed:parseFloat(E('sp').value),burn_subtitles:E('bs').checked,
     bgm_volume:parseFloat(E('bvol').value),card_duration:parseFloat(E('tcd').value),
+    end_card_duration:parseFloat(E('ecd').value),
     subtitle_style:subStyleStr,
     scenes:valid.map(s=>({image:s.image,text:s.text.trim(),hold_sec:s.hold||0}))};
   let body={manifest:m,bgm:bgm,
@@ -835,7 +852,8 @@ async function saveTemplate(){
   let data={name,scenes:S.filter(s=>s.image).map(s=>({text:s.text,image:s.image,hold:s.hold})),
     voice:E('v').value,speed:E('sp').value,burn:E('bs').checked,
     resolution:E('res').value,title_card:E('tc').value,end_card:E('ec').value,
-    bgm_volume:E('bvol').value,workers:E('wk').value,
+    card_duration:E('tcd').value,end_card_duration:E('ecd').value,
+    bgm:E('bgmSel').value||'',bgm_volume:E('bvol').value,workers:E('wk').value,
     subtitle_style:buildSubStyleStr()};
   await fetch('/api/templates',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(data)});
   toast('模板已保存','ok');
@@ -848,11 +866,28 @@ async function loadTemplate(id){
   if(t.speed)E('sp').value=t.speed,E('sv').textContent=parseFloat(t.speed).toFixed(2)+'x';
   if(t.burn!==undefined)E('bs').checked=t.burn;
   if(t.resolution)E('res').value=t.resolution;
-  if(t.title_card)E('tc').value=t.title_card;
-  if(t.end_card)E('ec').value=t.end_card;
+  if(t.title_card!==undefined)E('tc').value=t.title_card||'';
+  if(t.end_card!==undefined)E('ec').value=t.end_card||'';
+  if(t.card_duration!==undefined&&t.card_duration!==null&&t.card_duration!=='')E('tcd').value=t.card_duration;
+  if(t.end_card_duration!==undefined&&t.end_card_duration!==null&&t.end_card_duration!=='')E('ecd').value=t.end_card_duration;
   if(t.bgm_volume!==undefined)E('bvol').value=t.bgm_volume,E('bv').textContent=Math.round(parseFloat(t.bgm_volume)*100)+'%';
   if(t.workers)E('wk').value=t.workers;
   if(t.subtitle_style)applySubStyleFromStr(t.subtitle_style);
+  // BGM：列表可能尚未含该路径，直接挂 option
+  if(t.bgm){
+    await loadBGMList();
+    let sel=E('bgmSel'),found=false;
+    for(let opt of sel.options){
+      if(opt.value===t.bgm||(opt.value&&t.bgm.endsWith((opt.value.split(/[\\/]/).pop()||'')))){
+        opt.selected=true;found=true;break
+      }
+    }
+    if(!found){
+      let o=document.createElement('option');
+      o.value=t.bgm;o.textContent=t.bgm.split(/[\\/]/).pop()||'模板 BGM';
+      sel.appendChild(o);sel.value=t.bgm;
+    }else{sel.value=t.bgm}
+  }
   document.querySelector('.dialog-overlay')?.remove();
   toast('模板已加载','ok');
 }
@@ -916,14 +951,16 @@ async function importProject(){
   inp.onchange=async()=>{
     if(!inp.files.length)return;
     let f=inp.files[0];
-    if(f.size>100*1024*1024){toast('文件过大（上限100MB）','warn');return}
+    // 后端 Content-Length 上限 60MB，且 body 为 base64（约 ×4/3），zip 需更小
+    const MAX_IMPORT_ZIP=40*1024*1024;
+    if(f.size>MAX_IMPORT_ZIP){toast('文件过大（上限约40MB，受上传编码限制）','warn');return}
     let b64=await fileToB64(f);
     toast('正在导入...','info');
     try{
       let resp=await fetch('/api/import',{method:'POST',headers:{'Content-Type':'application/json'},
         body:JSON.stringify({data:b64})});
-      let d=await resp.json();
-      if(d.error){toast(d.error,'error');return}
+      let d=await resp.json().catch(()=>({}));
+      if(!resp.ok||d.error){toast(d.error||('导入失败 HTTP '+resp.status),'error');return}
       // 加载 manifest 到 UI
       let m=d.manifest;
       S=m.scenes.map(s=>({image:s.image,text:s.text||'',hold:s.hold_sec||s.hold||0}));
@@ -965,8 +1002,11 @@ async function importProject(){
 
 /* ── 清理旧文件 ── */
 async function cleanOld(){
-  let r=await fetch('/api/clean',{method:'POST'});let d=await r.json();
-  toast(d.message||'已清理',d.error?'error':'ok');
+  if(!confirm('清理旧渲染文件？将保留最近 5 个及进行中任务，其余成片目录会被删除。'))return;
+  try{
+    let r=await fetch('/api/clean',{method:'POST'});let d=await r.json();
+    toast(d.message||'已清理',d.error?'error':'ok');
+  }catch(e){toast('清理失败: '+e,'error')}
 }
 
 document.addEventListener('dragover',e=>e.preventDefault());
@@ -1017,10 +1057,19 @@ def _is_under_any(path: Path, roots) -> bool:
 
 
 def _sanitize_upload_name(name: str) -> str:
-    """Basename only; strip path separators / traversal; ASCII-ish safe chars."""
+    """Basename only; strip path separators / traversal; ASCII-only safe chars."""
     base = Path(str(name or '')).name or 'file.bin'
-    safe = re.sub(r'[^\w.\-]+', '_', base).strip('._') or 'file.bin'
-    return safe
+    stem = Path(base).stem
+    suffix = Path(base).suffix.lower()
+    # 扩展名仅保留 . + ASCII 字母数字
+    if suffix:
+        suffix = '.' + re.sub(r'[^A-Za-z0-9]+', '', suffix.lstrip('.'))[:12]
+        if suffix == '.':
+            suffix = ''
+    # 仅保留 ASCII 字母数字与 _-，中文/空格/符号一律替换
+    safe_stem = re.sub(r'[^A-Za-z0-9_-]+', '_', stem).strip('._-') or 'file'
+    safe = safe_stem + (suffix or '')
+    return safe or 'file.bin'
 
 
 def _sanitize_render_id(rid) -> str | None:
@@ -1078,12 +1127,22 @@ def _looks_like_cancel(msg) -> bool:
     return '用户取消' in msg or msg.strip() in ('已取消', '渲染已被用户取消')
 
 
-def _mark_job_cancelled(job: dict, error: str = '已取消'):
-    """Mark a job as cancelled/done without clobbering a prior non-cancel error unnecessarily."""
+def _mark_job_cancelled(job: dict, error: str = '已取消') -> bool:
+    """Mark a job as cancelled/done.
+
+    Returns False if the job is already in a non-cancel terminal state
+    (success with video, or failure/timeout diagnostics). Late cancel must
+    not wipe a finished video URL or rewrite timeout/fail errors.
+    """
+    if job.get('done') and not job.get('cancelled'):
+        return False
+    if job.get('cancelled') and job.get('done'):
+        return True
     job['cancelled'] = True
     job['progress'] = '已取消'
     job['error'] = job.get('error') or error
     job['done'] = True
+    return True
 
 
 def _signal_cancel_token_if_active(rid):
@@ -1097,12 +1156,19 @@ def _signal_cancel_token_if_active(rid):
 
 
 def _check_edge_tts():
-    """检测 edge-tts 是否可用，返回 ('edge'|'system', str)"""
+    """检测可用 TTS，返回 (engine, label)。
+
+    委托 video_auto 的探测逻辑；Linux/macOS 不会谎称系统 TTS 可用。
+    """
     try:
-        import edge_tts
-        return 'edge', 'Edge TTS'
-    except ImportError:
-        return 'system', '系统 TTS'
+        import video_auto as _va
+        if _va.edge_tts_available():
+            return 'edge', 'Edge TTS'
+        if _va.system_tts_available():
+            return 'system', '系统 TTS'
+    except Exception:
+        pass
+    return 'none', '无可用 TTS（请安装 edge-tts）'
 
 
 class H(SimpleHTTPRequestHandler):
@@ -1194,9 +1260,15 @@ class H(SimpleHTTPRequestHandler):
                                     if mp4s:
                                         video = '/' + str(mp4s[0].relative_to(ROOT)).replace('\\', '/')
                                         j['video'] = video
+                                        if not j.get('srt'):
+                                            srt_p = mp4s[0].with_suffix('.srt')
+                                            if srt_p.is_file():
+                                                j['srt'] = '/' + str(srt_p.relative_to(ROOT)).replace('\\', '/')
                             except Exception:
                                 pass
                     resp['video'] = video
+                    if j.get('srt'):
+                        resp['srt'] = j.get('srt')
                     j['progress'] = j.get('progress') or '完成'
             self._json(resp)
         elif p.path == '/api/bgm-list':
@@ -1448,6 +1520,9 @@ class H(SimpleHTTPRequestHandler):
                             mp4s = sorted(out.glob('*.mp4'))
                             if mp4s:
                                 j['video'] = '/' + str(mp4s[0].relative_to(ROOT)).replace('\\', '/')
+                                srt_p = mp4s[0].with_suffix('.srt')
+                                if srt_p.is_file():
+                                    j['srt'] = '/' + str(srt_p.relative_to(ROOT)).replace('\\', '/')
                             j['progress'] = '完成'
                     except Exception as e:
                         import traceback
@@ -1551,6 +1626,9 @@ class H(SimpleHTTPRequestHandler):
             rid = p.path.split('/')[-1]
             j = JOBS.get(rid)
             if j:
+                # 已成功/失败终态：忽略迟到 cancel，避免抹掉 video 或诊断文案
+                if j.get('done') and not j.get('cancelled'):
+                    self._json({'status': 'ok', 'ignored': True}); return
                 # 先设置取消信号，再标记 done，避免 mon() 提前退出错过取消
                 if j.get('cancel_event'):
                     j['cancel_event'].set()
@@ -1699,7 +1777,12 @@ class H(SimpleHTTPRequestHandler):
             project_dir = UPLOAD_DIR / f'project_{project_id}'
             project_dir.mkdir(parents=True, exist_ok=True)
             zip_buf = io.BytesIO(zip_bytes)
-            with zipfile.ZipFile(zip_buf, 'r') as zf:
+            try:
+                zf_ctx = zipfile.ZipFile(zip_buf, 'r')
+            except zipfile.BadZipFile:
+                shutil.rmtree(project_dir, ignore_errors=True)
+                self._json({'error': '不是有效的 zip 工程文件'}, 400); return
+            with zf_ctx as zf:
                 # 安全检查：防止路径穿越和 zip bomb
                 total_size = 0
                 max_extract = 500 * 1024 * 1024  # 500MB 上限
@@ -1873,16 +1956,34 @@ class H(SimpleHTTPRequestHandler):
 
 def main():
     ap = argparse.ArgumentParser(description='narravid Web UI')
-    ap.add_argument('--port', type=int, default=5000)
-    ap.add_argument('--host', default='127.0.0.1')
+    ap.add_argument('--port', type=int, default=int(os.environ.get('NARRAVID_PORT', '5000') or 5000))
+    # Docker 可设 NARRAVID_HOST=0.0.0.0；本机默认仅回环
+    default_host = os.environ.get('NARRAVID_HOST') or (
+        '0.0.0.0' if os.environ.get('NARRAVID_DOCKER') else '127.0.0.1'
+    )
+    ap.add_argument('--host', default=default_host)
     args = ap.parse_args()
     for d in [OUT_BASE, UPLOAD_DIR, TEMPLATE_DIR]:
         d.mkdir(parents=True, exist_ok=True)
     # ThreadingHTTPServer：上传/状态轮询/导出互不阻塞；渲染仍由 RENDER_LOCK 串行
     srv = ThreadingHTTPServer((args.host, args.port), H)
-    url = f'http://{args.host}:{args.port}'
+    display_host = '127.0.0.1' if args.host in ('0.0.0.0', '::') else args.host
+    url = f'http://{display_host}:{args.port}'
     print(f'narravid Web UI: {url}')
-    print(f'  打开浏览器访问上述地址即可')
+    if args.host in ('0.0.0.0', '::'):
+        print(f'  监听 {args.host}:{args.port}（局域网/容器可访问；内网请加反代鉴权）')
+    print(f'  在浏览器打开上述地址即可')
+    # 环境探测放到后台，避免阻塞首包/accept
+    def _env_probe():
+        try:
+            import video_auto as _va
+            eng = _va.resolve_tts_engine(None)
+            print(f'  TTS: {eng}' + ('' if eng != 'edge' else ' (edge-tts)'))
+            if not _va._find_zh_font():
+                print('  [warn] 未找到中文字体：标题页/字幕可能方块。设置 NARRAVID_FONT 或安装 Noto CJK / 放入 fonts/')
+        except Exception as e:
+            print(f'  [warn] 环境检测: {e}')
+    threading.Thread(target=_env_probe, daemon=True).start()
     try:
         srv.serve_forever()
     except KeyboardInterrupt:

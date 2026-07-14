@@ -122,18 +122,24 @@ python video_auto.py my-video.json --title-card "数据分析" --no-burn
 - ffmpeg / ffprobe（也可下载 exe 版本，自带 ffmpeg）
 - `pip install -r requirements.txt`
 
-## 测试
+## 测试与代码规范
 
 ```bash
+# 分层单元/安全/live（推荐日常）
+python run_tests.py --fast
+python run_tests.py
+
 # 端到端全功能测试（自动启动 WebUI、生成测试素材、测试所有功能）
 python test_e2e.py
-
-# 自定义参数
 python test_e2e.py --port 5001 --workers 4 --keep
-
-# 测试已有服务
 python test_e2e.py --base-url http://127.0.0.1:5000
+
+# 开发依赖 + Ruff（命名/风格/import）
+pip install -r requirements-dev.txt
+ruff check .
 ```
+
+命名与风格约定见 [docs/STYLE.md](docs/STYLE.md)。
 
 ## License
 

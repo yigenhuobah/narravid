@@ -16,6 +16,7 @@ from pathlib import Path
 from unittest import mock
 from urllib.parse import quote
 
+import webui
 from tests.support import (
     ROOT,
     fake_video_auto_main,
@@ -27,7 +28,6 @@ from tests.support import (
     write_tiny_png,
     write_tone_wav,
 )
-import webui
 
 
 class TestLiveBasicApi(unittest.TestCase):
@@ -44,6 +44,14 @@ class TestLiveBasicApi(unittest.TestCase):
             code, data = http_json('GET', base + '/api/tts-check')
             self.assertEqual(code, 200)
             self.assertIn(data.get('engine'), ('edge', 'system'))
+
+    def test_health(self):
+        with live_webui() as base:
+            code, data = http_json('GET', base + '/api/health')
+            self.assertIn(code, (200, 503))
+            self.assertIn('tts', data)
+            self.assertIn('ffmpeg', data)
+            self.assertIn('ok', data)
 
     def test_upload_and_bgm_list(self):
         with live_webui() as base:

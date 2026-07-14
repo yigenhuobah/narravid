@@ -8,8 +8,8 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-import video_auto
 import _bundled_ffmpeg
+import video_auto
 
 
 class TestSystemTtsGate(unittest.TestCase):

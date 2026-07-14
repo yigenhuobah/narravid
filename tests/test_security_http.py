@@ -10,8 +10,8 @@ import zipfile
 from pathlib import Path
 from unittest import mock
 
-from tests.support import ROOT, make_handler, read_response, write_tiny_png
 import webui
+from tests.support import ROOT, make_handler, read_response, write_tiny_png
 
 
 class FakeThread:

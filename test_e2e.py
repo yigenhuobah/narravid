@@ -19,17 +19,15 @@ narravid WebUI 全功能端到端测试脚本
 """
 import argparse
 import base64
-import io
 import json
-import os
 import shutil
 import subprocess
 import sys
 import time
 import wave
 from pathlib import Path
-from urllib.request import Request, urlopen
 from urllib.error import HTTPError
+from urllib.request import Request, urlopen
 
 # ── 测试素材生成 ──────────────────────────────────────────────
 
@@ -38,7 +36,6 @@ def generate_test_image(width: int, height: int, color: tuple, text: str, out_pa
     import matplotlib
     matplotlib.use('Agg')
     import matplotlib.pyplot as plt
-    import numpy as np
 
     fig, ax = plt.subplots(figsize=(width / 100, height / 100), dpi=100)
     r, g, b = [x / 255 for x in color]
@@ -57,8 +54,8 @@ def generate_test_image(width: int, height: int, color: tuple, text: str, out_pa
 
 def generate_test_bgm(out_path: Path, duration_sec: float = 15.0, freq: float = 440.0):
     """用 Python wave 模块生成简单的正弦波 BGM wav 文件"""
-    import struct
     import math
+    import struct
 
     sample_rate = 24000
     n_samples = int(sample_rate * duration_sec)
@@ -174,7 +171,7 @@ class TestResult:
         print(f'  \033[91m失败: {len(self.failed)}\033[0m')
         print(f'  \033[93m跳过: {len(self.skipped)}\033[0m')
         if self.failed:
-            print(f'\n  失败项:')
+            print('\n  失败项:')
             for f in self.failed:
                 print(f'    - {f}')
         print(f'{"="*60}')
@@ -541,7 +538,8 @@ def run_tests(base_url: str, test_dir: Path, workers: int, result: TestResult):
         zbytes = resp.read()
         if resp.status == 200 and zbytes[:2] == b'PK':
             result.ok('导出 zip', f'{len(zbytes)} bytes')
-            import zipfile, io as _io
+            import io as _io
+            import zipfile
             with zipfile.ZipFile(_io.BytesIO(zbytes)) as zf:
                 man = json.loads(zf.read('manifest.json').decode('utf-8'))
                 if man['scenes'][0]['image'].startswith('assets/'):
@@ -575,9 +573,7 @@ def run_tests(base_url: str, test_dir: Path, workers: int, result: TestResult):
 
     # ── 测试 13: 完成后 cancel 保留成片 ──
     print('\n[13] 完成后 cancel 保留成片')
-    # 复用已完成的 e2etest 若仍在；否则快速静音场景
-    probe_id = None
-    # 找一个刚完成的短任务
+    # 快速静音场景后 cancel，确认成片 URL 不被抹掉
     short = {
         'manifest': {
             'title': 'e2e-late-cancel',
@@ -695,7 +691,7 @@ def main():
 
     if not args.keep and test_dir.exists():
         shutil.rmtree(test_dir, ignore_errors=True)
-        print(f'\n测试输出已清理 (用 --keep 保留)')
+        print('\n测试输出已清理 (用 --keep 保留)')
     else:
         print(f'\n测试输出保留在: {test_dir}')
 

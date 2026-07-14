@@ -2,14 +2,13 @@
 from __future__ import annotations
 
 import json
-import shutil
 import tempfile
 import unittest
 from pathlib import Path
 from unittest import mock
 
-from tests.support import has_ffmpeg, write_silence_wav, write_tone_wav
 import video_auto
+from tests.support import has_ffmpeg, write_tone_wav
 
 
 def _write_matplotlib_png(path: Path, w: int = 320, h: int = 240):

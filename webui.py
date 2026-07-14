@@ -5,10 +5,20 @@ narravid Web UI v6 — 图片上传、缩略图预览、BGM 管理、在线预�
   python webui.py
   python webui.py --port 8080
 """
-import argparse, base64, io, json, os, re, shutil, sys, threading, time, uuid
-from pathlib import Path
-from http.server import HTTPServer, SimpleHTTPRequestHandler, ThreadingHTTPServer
+import argparse
+import base64
+import io
+import json
+import os
+import re
+import shutil
+import sys
+import threading
+import time
 import urllib.parse
+import uuid
+from http.server import HTTPServer, SimpleHTTPRequestHandler, ThreadingHTTPServer
+from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent
 SCRIPT = ROOT / 'video_auto.py'
@@ -387,8 +397,8 @@ body{font-family:"Microsoft YaHei","PingFang SC","Noto Sans SC",sans-serif;backg
 </div>
 
 <script>
-let S=[],rid=null,tmr=null,uploading=0,bgmList=[],currentVideo='',ttsEngine='edge';
-const E=id=>document.getElementById(id);
+let scenes=[],rid=null,tmr=null,uploading=0,bgmList=[],currentVideo='',ttsEngine='edge';
+const byId=id=>document.getElementById(id);
 const MAX_IMG=20*1024*1024, MAX_BGM=50*1024*1024;
 
 /* ── Toast ── */
@@ -434,7 +444,7 @@ function buildSubStyleStr(){
 }
 
 function updateSubPreview(){
-  let el=E('subPrevText');
+  let el=byId('subPrevText');
   el.style.fontFamily="'"+subStyle.font+"',sans-serif";
   el.style.fontSize=Math.round(subStyle.size*1.1)+'px';
   el.style.color='#'+subStyle.color;
@@ -454,30 +464,30 @@ function updateSubPreview(){
   let alignMap={'2':'center','1':'left','3':'right','8':'center','5':'center'};
   let vAlignMap={'2':'flex-end','1':'flex-end','3':'flex-end','8':'flex-start','5':'center'};
   el.style.textAlign=alignMap[subStyle.align]||'center';
-  E('subPrev').style.alignItems=vAlignMap[subStyle.align]||'flex-end';
+  byId('subPrev').style.alignItems=vAlignMap[subStyle.align]||'flex-end';
 }
 
 function bindSubStyleControls(){
-  E('ssFont').onchange=e=>{subStyle.font=e.target.value;updateSubPreview()};
-  E('ssSize').oninput=e=>{subStyle.size=parseInt(e.target.value)||16;updateSubPreview()};
-  E('ssOutline').oninput=e=>{subStyle.outline=parseFloat(e.target.value)||0;updateSubPreview()};
-  E('ssMargin').oninput=e=>{subStyle.margin=parseInt(e.target.value)||0;updateSubPreview()};
-  E('ssAlign').onchange=e=>{subStyle.align=parseInt(e.target.value);updateSubPreview()};
-  E('ssBold').onchange=e=>{subStyle.bold=e.target.checked;updateSubPreview()};
+  byId('ssFont').onchange=e=>{subStyle.font=e.target.value;updateSubPreview()};
+  byId('ssSize').oninput=e=>{subStyle.size=parseInt(e.target.value)||16;updateSubPreview()};
+  byId('ssOutline').oninput=e=>{subStyle.outline=parseFloat(e.target.value)||0;updateSubPreview()};
+  byId('ssMargin').oninput=e=>{subStyle.margin=parseInt(e.target.value)||0;updateSubPreview()};
+  byId('ssAlign').onchange=e=>{subStyle.align=parseInt(e.target.value);updateSubPreview()};
+  byId('ssBold').onchange=e=>{subStyle.bold=e.target.checked;updateSubPreview()};
   // 颜色联动
-  E('ssColorPicker').oninput=e=>{subStyle.color=e.target.value.slice(1).toUpperCase();E('ssColor').value=subStyle.color;updateSubPreview()};
-  E('ssColor').oninput=e=>{let v=e.target.value.replace(/[^0-9A-Fa-f]/g,'').slice(0,6).toUpperCase();e.target.value=v;if(v.length===6){subStyle.color=v;E('ssColorPicker').value='#'+v;updateSubPreview()}};
-  E('ssOutlinePicker').oninput=e=>{subStyle.outlineColor=e.target.value.slice(1).toUpperCase();E('ssOutlineColor').value=subStyle.outlineColor;updateSubPreview()};
-  E('ssOutlineColor').oninput=e=>{let v=e.target.value.replace(/[^0-9A-Fa-f]/g,'').slice(0,6).toUpperCase();e.target.value=v;if(v.length===6){subStyle.outlineColor=v;E('ssOutlinePicker').value='#'+v;updateSubPreview()}};
+  byId('ssColorPicker').oninput=e=>{subStyle.color=e.target.value.slice(1).toUpperCase();byId('ssColor').value=subStyle.color;updateSubPreview()};
+  byId('ssColor').oninput=e=>{let v=e.target.value.replace(/[^0-9A-Fa-f]/g,'').slice(0,6).toUpperCase();e.target.value=v;if(v.length===6){subStyle.color=v;byId('ssColorPicker').value='#'+v;updateSubPreview()}};
+  byId('ssOutlinePicker').oninput=e=>{subStyle.outlineColor=e.target.value.slice(1).toUpperCase();byId('ssOutlineColor').value=subStyle.outlineColor;updateSubPreview()};
+  byId('ssOutlineColor').oninput=e=>{let v=e.target.value.replace(/[^0-9A-Fa-f]/g,'').slice(0,6).toUpperCase();e.target.value=v;if(v.length===6){subStyle.outlineColor=v;byId('ssOutlinePicker').value='#'+v;updateSubPreview()}};
 }
 
 function resetSubStyle(){
   subStyle={...SUB_DEFAULT};
-  E('ssFont').value=subStyle.font;E('ssSize').value=subStyle.size;
-  E('ssOutline').value=subStyle.outline;E('ssMargin').value=subStyle.margin;
-  E('ssAlign').value=subStyle.align;E('ssBold').checked=subStyle.bold;
-  E('ssColor').value=subStyle.color;E('ssColorPicker').value='#'+subStyle.color;
-  E('ssOutlineColor').value=subStyle.outlineColor;E('ssOutlinePicker').value='#'+subStyle.outlineColor;
+  byId('ssFont').value=subStyle.font;byId('ssSize').value=subStyle.size;
+  byId('ssOutline').value=subStyle.outline;byId('ssMargin').value=subStyle.margin;
+  byId('ssAlign').value=subStyle.align;byId('ssBold').checked=subStyle.bold;
+  byId('ssColor').value=subStyle.color;byId('ssColorPicker').value='#'+subStyle.color;
+  byId('ssOutlineColor').value=subStyle.outlineColor;byId('ssOutlinePicker').value='#'+subStyle.outlineColor;
   updateSubPreview();
   toast('已重置为默认样式','ok');
 }
@@ -495,20 +505,20 @@ function applySubStyleFromStr(str){
   if(m=str.match(/Alignment=(\d+)/))subStyle.align=parseInt(m[1]);
   if(m=str.match(/Bold=(\d+)/))subStyle.bold=m[1]==='1';
   // 同步 UI
-  E('ssFont').value=subStyle.font;E('ssSize').value=subStyle.size;
-  E('ssOutline').value=subStyle.outline;E('ssMargin').value=subStyle.margin;
-  E('ssAlign').value=subStyle.align;E('ssBold').checked=subStyle.bold;
-  E('ssColor').value=subStyle.color;E('ssColorPicker').value='#'+subStyle.color;
-  E('ssOutlineColor').value=subStyle.outlineColor;E('ssOutlinePicker').value='#'+subStyle.outlineColor;
+  byId('ssFont').value=subStyle.font;byId('ssSize').value=subStyle.size;
+  byId('ssOutline').value=subStyle.outline;byId('ssMargin').value=subStyle.margin;
+  byId('ssAlign').value=subStyle.align;byId('ssBold').checked=subStyle.bold;
+  byId('ssColor').value=subStyle.color;byId('ssColorPicker').value='#'+subStyle.color;
+  byId('ssOutlineColor').value=subStyle.outlineColor;byId('ssOutlinePicker').value='#'+subStyle.outlineColor;
   updateSubPreview();
 }
 
 function init(){
-  E('sp').oninput=()=>E('sv').textContent=parseFloat(E('sp').value).toFixed(2)+'x';
-  E('bvol').oninput=()=>E('bv').textContent=Math.round(parseFloat(E('bvol').value)*100)+'%';
-  E('bgmFile').onchange=uploadBGM;
+  byId('sp').oninput=()=>byId('sv').textContent=parseFloat(byId('sp').value).toFixed(2)+'x';
+  byId('bvol').oninput=()=>byId('bv').textContent=Math.round(parseFloat(byId('bvol').value)*100)+'%';
+  byId('bgmFile').onchange=uploadBGM;
   // 按平台默认字幕字体选中对应 option（无则保留列表第一项语义由 subStyle 决定）
-  try{E('ssFont').value=subStyle.font}catch(e){}
+  try{byId('ssFont').value=subStyle.font}catch(e){}
   bindSubStyleControls();
   updateSubPreview();
   add();add();add();
@@ -527,7 +537,7 @@ async function checkTTS(){
 
 /* ── BGM 管理 ── */
 async function uploadBGM(){
-  let f=E('bgmFile').files[0];if(!f)return;
+  let f=byId('bgmFile').files[0];if(!f)return;
   if(f.size>MAX_BGM){toast('BGM 文件超过 50MB 限制','warn');return}
   try{
     let b64=await fileToB64(f);
@@ -536,7 +546,7 @@ async function uploadBGM(){
     if(!resp.ok)throw new Error('HTTP '+resp.status);
     let d=await resp.json();
     await loadBGMList();
-    E('bgmSel').value=d.path;
+    byId('bgmSel').value=d.path;
     toast('BGM 上传成功','ok');
   }catch(e){toast('BGM 上传失败: '+e)}
 }
@@ -544,7 +554,7 @@ async function loadBGMList(){
   try{
     let resp=await fetch('/api/bgm-list');if(!resp.ok)return;
     bgmList=await resp.json();
-    let sel=E('bgmSel'),cur=sel.value;
+    let sel=byId('bgmSel'),cur=sel.value;
     sel.innerHTML='<option value="">无 BGM</option>';
     bgmList.forEach(b=>{
       let o=document.createElement('option');o.value=b.path;o.textContent=b.name;
@@ -589,15 +599,15 @@ async function batch(){
     uploading=files.length;updateStats();
     let next=0;
     for(let f of files){
-      let idx=S.findIndex((s,i)=>i>=next&&!s.image);
-      let sidx=idx>=0?idx:S.length;
-      if(idx<0){S.push({image:'',text:'',hold:0,_loading:true})}
-      S[sidx]._loading=true;
+      let idx=scenes.findIndex((s,i)=>i>=next&&!s.image);
+      let sidx=idx>=0?idx:scenes.length;
+      if(idx<0){scenes.push({image:'',text:'',hold:0,_loading:true})}
+      scenes[sidx]._loading=true;
       next=(idx>=0?idx:sidx)+1;
-      pain();
-      try{let path=await uploadFile(f);S[sidx].image=path;S[sidx]._name=f.name;S[sidx]._loading=false}
-      catch(e){console.error('upload',e);toast('上传失败: '+e);S[sidx]._loading=false;S[sidx]._error=true}
-      uploading--;updateStats();pain();
+      paintScenes();
+      try{let path=await uploadFile(f);scenes[sidx].image=path;scenes[sidx]._name=f.name;scenes[sidx]._loading=false}
+      catch(e){console.error('upload',e);toast('上传失败: '+e);scenes[sidx]._loading=false;scenes[sidx]._error=true}
+      uploading--;updateStats();paintScenes();
     }
   };
   inp.click();
@@ -608,36 +618,36 @@ function handleDrop(files){
   if(!imgs.length)return;
   let next=0;
   for(let f of imgs){
-    let idx=S.findIndex((s,i)=>i>=next&&!s.image);
-    let sidx=idx>=0?idx:S.length;
-    if(idx<0){S.push({image:'',text:'',hold:0,_loading:true})}
-    S[sidx]._loading=true;
+    let idx=scenes.findIndex((s,i)=>i>=next&&!s.image);
+    let sidx=idx>=0?idx:scenes.length;
+    if(idx<0){scenes.push({image:'',text:'',hold:0,_loading:true})}
+    scenes[sidx]._loading=true;
     next=(idx>=0?idx:sidx)+1;
-    uploading++;updateStats();pain();
-    uploadFile(f).then(path=>{S[sidx].image=path;S[sidx]._name=f.name;S[sidx]._loading=false})
-    .catch(e=>{console.error('upload',e);toast('上传失败: '+e);S[sidx]._loading=false;S[sidx]._error=true})
-    .finally(()=>{uploading--;updateStats();pain()});
+    uploading++;updateStats();paintScenes();
+    uploadFile(f).then(path=>{scenes[sidx].image=path;scenes[sidx]._name=f.name;scenes[sidx]._loading=false})
+    .catch(e=>{console.error('upload',e);toast('上传失败: '+e);scenes[sidx]._loading=false;scenes[sidx]._error=true})
+    .finally(()=>{uploading--;updateStats();paintScenes()});
   }
 }
 
-function add(img,txt,hold){S.push({image:img||'',text:txt||'',hold:hold||0});pain()}
-function del(i){S.splice(i,1);pain()}
+function add(img,txt,hold){scenes.push({image:img||'',text:txt||'',hold:hold||0});paintScenes()}
+function del(i){scenes.splice(i,1);paintScenes()}
 function chImg(i){
   let inp=document.createElement('input');inp.type='file';inp.accept='image/*,video/*';
   inp.onchange=async()=>{
     if(!inp.files[0])return;
-    S[i]._loading=true;uploading++;updateStats();pain();
-    try{let path=await uploadFile(inp.files[0]);S[i].image=path;S[i]._name=inp.files[0].name;S[i]._loading=false}
-    catch(e){console.error(e);toast('换图失败: '+e);S[i]._loading=false}
-    uploading--;updateStats();pain();
+    scenes[i]._loading=true;uploading++;updateStats();paintScenes();
+    try{let path=await uploadFile(inp.files[0]);scenes[i].image=path;scenes[i]._name=inp.files[0].name;scenes[i]._loading=false}
+    catch(e){console.error(e);toast('换图失败: '+e);scenes[i]._loading=false}
+    uploading--;updateStats();paintScenes();
   };
   inp.click();
 }
-function updateStats(){E('ustats').textContent=uploading>0?uploading+' 张上传中...':'';}
-function thumbUrl(i){let img=S[i].image;if(!img)return'';return'/thumb?path='+encodeURIComponent(img);}
+function updateStats(){byId('ustats').textContent=uploading>0?uploading+' 张上传中...':'';}
+function thumbUrl(i){let img=scenes[i].image;if(!img)return'';return'/thumb?path='+encodeURIComponent(img);}
 function isVideo(path){return/\.(mp4|mov|mkv|avi|webm|flv)$/i.test(path||'')}
 function lightbox(i){
-  let img=S[i].image;if(!img)return;
+  let img=scenes[i].image;if(!img)return;
   let d=document.createElement('div');d.className='lb';d.onclick=()=>d.remove();
   if(isVideo(img)){
     let v=document.createElement('video');v.src=thumbUrl(i);v.controls=true;v.style.maxWidth='90vw';v.style.maxHeight='80vh';d.appendChild(v);
@@ -656,15 +666,15 @@ function dragEnter(i){if(dragFrom===null||dragFrom===i)return;dragOverIdx=i;
 }
 function dragLV(){document.querySelectorAll('.scene').forEach(el=>el.classList.remove('drag-over'))}
 function dropS(i,e){e.preventDefault();dragLV();if(dragFrom===null||dragFrom===i)return;
-  let t=S.splice(dragFrom,1)[0];S.splice(i,0,t);pain();dragFrom=null;dragOverIdx=null}
+  let t=scenes.splice(dragFrom,1)[0];scenes.splice(i,0,t);paintScenes();dragFrom=null;dragOverIdx=null}
 
-function pain(){
-  if(!S.length){
-    E('list').innerHTML='<div class="empty"><div class="icon">🎞</div><p>还没有场景</p><div class="hint">点击「添加图片」上传图片或视频，或将文件拖入此页面</div></div>';
+function paintScenes(){
+  if(!scenes.length){
+    byId('list').innerHTML='<div class="empty"><div class="icon">🎞</div><p>还没有场景</p><div class="hint">点击「添加图片」上传图片或视频，或将文件拖入此页面</div></div>';
     return;
   }
   let h='';
-  S.forEach((s,i)=>{
+  scenes.forEach((s,i)=>{
     let tu=thumbUrl(i);
     let hasImg=!!tu;
     let vid=isVideo(s.image);
@@ -688,16 +698,16 @@ function pain(){
       +'<div class="idx">#'+(i+1)+'</div>'
       +'<div class="'+cls+'" onclick="'+(hasImg?'lightbox('+i+')':'chImg('+i+')')+'">'+inner+'</div>'
       +'<div class="body">'
-        +'<textarea placeholder="输入解说文案（按句自动切字幕，逗号长句智能断句）" oninput="S['+i+'].text=this.value">'+esc(s.text)+'</textarea>'
+        +'<textarea placeholder="输入解说文案（按句自动切字幕，逗号长句智能断句）" oninput="scenes['+i+'].text=this.value">'+esc(s.text)+'</textarea>'
         +'<div class="foot">'
           +'<span class="'+pathCls+'">'+esc(nm||(s._loading?'上传中...':(s._error?'上传失败':'未上传文件')))+'</span>'
-          +'<input class="hold-input" type="number" placeholder="停顿秒" value="'+(s.hold||'')+'" oninput="S['+i+'].hold=parseFloat(this.value)||0" title="场景末尾额外停留秒数">'
+          +'<input class="hold-input" type="number" placeholder="停顿秒" value="'+(s.hold||'')+'" oninput="scenes['+i+'].hold=parseFloat(this.value)||0" title="场景末尾额外停留秒数">'
           +'<button class="btn-sm" onclick="chImg('+i+')">换图</button>'
           +'<button class="del" onclick="del('+i+')" title="删除场景">×</button>'
         +'</div>'
       +'</div></div>';
   });
-  E('list').innerHTML=h;
+  byId('list').innerHTML=h;
 }
 function esc(s){return(s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#39;')}
 
@@ -716,32 +726,32 @@ function parseProgress(text){
 /* ── 渲染 ── */
 let userCancelled=false; // 硬闸：取消后忽略成功 status，禁止重叠 render
 async function render(){
-  if(E('rb').disabled)return; // 进行中/取消中禁止重叠
+  if(byId('rb').disabled)return; // 进行中/取消中禁止重叠
   // 实时从 DOM 读取 textarea 值（防止 oninput 未同步的场景）
-  document.querySelectorAll('.scene textarea').forEach((ta,i)=>{if(S[i])S[i].text=ta.value});
-  let valid=S.filter(s=>s.image);
+  document.querySelectorAll('.scene textarea').forEach((ta,i)=>{if(scenes[i])scenes[i].text=ta.value});
+  let valid=scenes.filter(s=>s.image);
   if(!valid.length){alert('请至少添加一张图片');return}
   if(uploading>0){alert('还有图片在上传中，请稍候');return}
-  let skipped=S.length-valid.length;
+  let skipped=scenes.length-valid.length;
   if(skipped>0){toast('已跳过 '+skipped+' 个未上传媒体的场景','warn')}
-  let bgm=E('bgmSel').value||null;
-  let res=(E('res').value||'1920x1080').split('x');
+  let bgm=byId('bgmSel').value||null;
+  let res=(byId('res').value||'1920x1080').split('x');
   let subStyleStr=buildSubStyleStr();
-  let m={title:'narravid',width:parseInt(res[0]),height:parseInt(res[1]),tts_engine:ttsEngine,workers:parseInt(E('wk').value),
-    voice:E('v').value,speech_speed:parseFloat(E('sp').value),burn_subtitles:E('bs').checked,
-    bgm_volume:parseFloat(E('bvol').value),card_duration:parseFloat(E('tcd').value),
-    end_card_duration:parseFloat(E('ecd').value),
+  let m={title:'narravid',width:parseInt(res[0]),height:parseInt(res[1]),tts_engine:ttsEngine,workers:parseInt(byId('wk').value),
+    voice:byId('v').value,speech_speed:parseFloat(byId('sp').value),burn_subtitles:byId('bs').checked,
+    bgm_volume:parseFloat(byId('bvol').value),card_duration:parseFloat(byId('tcd').value),
+    end_card_duration:parseFloat(byId('ecd').value),
     subtitle_style:subStyleStr,
     scenes:valid.map(s=>({image:s.image,text:s.text.trim(),hold_sec:s.hold||0}))};
   let body={manifest:m,bgm:bgm,
-    title_card:E('tc').value.trim()||null,
-    end_card:E('ec').value.trim()||null,
-    card_duration:parseFloat(E('tcd').value),
-    end_card_duration:parseFloat(E('ecd').value)};
+    title_card:byId('tc').value.trim()||null,
+    end_card:byId('ec').value.trim()||null,
+    card_duration:parseFloat(byId('tcd').value),
+    end_card_duration:parseFloat(byId('ecd').value)};
   userCancelled=false;
   rid='r'+Math.random().toString(36).slice(2,8);
-  E('st').style.display='block';E('sm').textContent='正在生成视频...';E('rb').disabled=true;
-  E('pf').style.width='2%';
+  byId('st').style.display='block';byId('sm').textContent='正在生成视频...';byId('rb').disabled=true;
+  byId('pf').style.width='2%';
   try{
     let r=await fetch('/api/render',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({...body,render_id:rid})});
     let d=await r.json();
@@ -750,12 +760,12 @@ async function render(){
     if(userCancelled){
       const realId=d.render_id||rid;
       if(realId)fetch('/api/cancel/'+realId,{method:'POST'});
-      rid=null;E('st').style.display='none';E('rb').disabled=false;E('pf').style.width='0';
+      rid=null;byId('st').style.display='none';byId('rb').disabled=false;byId('pf').style.width='0';
       return;
     }
     rid=d.render_id;poll();
   }catch(e){
-    if(userCancelled){rid=null;E('st').style.display='none';E('rb').disabled=false;return}
+    if(userCancelled){rid=null;byId('st').style.display='none';byId('rb').disabled=false;return}
     done(e.message)
   }
 }
@@ -769,8 +779,8 @@ function poll(){
     if(d.error&&String(d.error).indexOf('超时')>=0){done(d.error);return}
     if(d.cancelled||(d.error&&String(d.error).indexOf('取消')>=0)){done('已取消',null,true);return}
     if(d.error){done(d.error);return}
-    E('sm').textContent=d.progress||'渲染中';
-    E('pf').style.width=parseProgress(d.progress)+'%';
+    byId('sm').textContent=d.progress||'渲染中';
+    byId('pf').style.width=parseProgress(d.progress)+'%';
     if(d.done){
       if(d.cancelled||(d.progress&&d.progress.indexOf('取消')>=0)){done('已取消',null,true);return}
       if(!d.video&&!d.error){done(d.progress&&d.progress.indexOf('失败')>=0?d.progress:'渲染结束但未生成视频');return}
@@ -780,9 +790,9 @@ function poll(){
   }).catch(()=>{if(rid===pollRid&&!userCancelled)tmr=setTimeout(poll,1000)});
 }
 function done(err,video,asCancel){
-  clearTimeout(tmr);E('st').style.display='none';E('rb').disabled=false;rid=null;userCancelled=false;
-  E('pf').style.width='0';
-  let b=E('rs');
+  clearTimeout(tmr);byId('st').style.display='none';byId('rb').disabled=false;rid=null;userCancelled=false;
+  byId('pf').style.width='0';
+  let b=byId('rs');
   if(asCancel||(err&&String(err).indexOf('取消')>=0)){
     b.textContent='⏹ 已取消';b.style.background='linear-gradient(135deg,#7f8c8d,#95a5a6)';b.style.display='block';
   }else if(err){
@@ -798,23 +808,23 @@ function cancel(){
   userCancelled=true; // 硬闸：后续 poll 成功一律丢弃
   clearTimeout(tmr);
   if(cancelRid)fetch('/api/cancel/'+cancelRid,{method:'POST'});
-  E('st').style.display='none';E('pf').style.width='0';
+  byId('st').style.display='none';byId('pf').style.width='0';
   // 取消期间保持按钮禁用，直到确认服务端登记或超时，避免重叠 render
-  let b=E('rs');
+  let b=byId('rs');
   b.textContent='⏹ 已取消';b.style.background='linear-gradient(135deg,#7f8c8d,#95a5a6)';b.style.display='block';
   // 稍后释放按钮并清 rid（render await 返回时也会处理）
   setTimeout(()=>{
     if(rid===cancelRid)rid=null;
-    E('rb').disabled=false;
+    byId('rb').disabled=false;
     userCancelled=false;
   },2000);
 }
 
 /* ── 视频预览 ── */
 function showPreview(url){
-  E('pvVid').src=url;E('pv').style.display='block';
+  byId('pvVid').src=url;byId('pv').style.display='block';
 }
-function closePreview(){E('pvVid').pause();E('pvVid').src='';E('pv').style.display='none'}
+function closePreview(){byId('pvVid').pause();byId('pvVid').src='';byId('pv').style.display='none'}
 function dlVideo(){if(currentVideo){let a=document.createElement('a');a.href=currentVideo;a.download='';a.click()}}
 
 /* ── 模板 ── */
@@ -846,14 +856,14 @@ async function showTemplates(){
   });
 }
 async function saveTemplate(){
-  let name=E('tplName')?.value?.trim()||('模板 '+(new Date().toLocaleString('zh-CN',{month:'numeric',day:'numeric',hour:'2-digit',minute:'2-digit'})));
+  let name=byId('tplName')?.value?.trim()||('模板 '+(new Date().toLocaleString('zh-CN',{month:'numeric',day:'numeric',hour:'2-digit',minute:'2-digit'})));
   // 实时读 textarea
-  document.querySelectorAll('.scene textarea').forEach((ta,i)=>{if(S[i])S[i].text=ta.value});
-  let data={name,scenes:S.filter(s=>s.image).map(s=>({text:s.text,image:s.image,hold:s.hold})),
-    voice:E('v').value,speed:E('sp').value,burn:E('bs').checked,
-    resolution:E('res').value,title_card:E('tc').value,end_card:E('ec').value,
-    card_duration:E('tcd').value,end_card_duration:E('ecd').value,
-    bgm:E('bgmSel').value||'',bgm_volume:E('bvol').value,workers:E('wk').value,
+  document.querySelectorAll('.scene textarea').forEach((ta,i)=>{if(scenes[i])scenes[i].text=ta.value});
+  let data={name,scenes:scenes.filter(s=>s.image).map(s=>({text:s.text,image:s.image,hold:s.hold})),
+    voice:byId('v').value,speed:byId('sp').value,burn:byId('bs').checked,
+    resolution:byId('res').value,title_card:byId('tc').value,end_card:byId('ec').value,
+    card_duration:byId('tcd').value,end_card_duration:byId('ecd').value,
+    bgm:byId('bgmSel').value||'',bgm_volume:byId('bvol').value,workers:byId('wk').value,
     subtitle_style:buildSubStyleStr()};
   await fetch('/api/templates',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(data)});
   toast('模板已保存','ok');
@@ -861,22 +871,22 @@ async function saveTemplate(){
 }
 async function loadTemplate(id){
   let t=await fetch('/api/templates/'+id).then(r=>r.json());
-  if(t.scenes){S=t.scenes.map(s=>({image:s.image||'',text:s.text||'',hold:s.hold||0}));pain()}
-  if(t.voice)E('v').value=t.voice;
-  if(t.speed)E('sp').value=t.speed,E('sv').textContent=parseFloat(t.speed).toFixed(2)+'x';
-  if(t.burn!==undefined)E('bs').checked=t.burn;
-  if(t.resolution)E('res').value=t.resolution;
-  if(t.title_card!==undefined)E('tc').value=t.title_card||'';
-  if(t.end_card!==undefined)E('ec').value=t.end_card||'';
-  if(t.card_duration!==undefined&&t.card_duration!==null&&t.card_duration!=='')E('tcd').value=t.card_duration;
-  if(t.end_card_duration!==undefined&&t.end_card_duration!==null&&t.end_card_duration!=='')E('ecd').value=t.end_card_duration;
-  if(t.bgm_volume!==undefined)E('bvol').value=t.bgm_volume,E('bv').textContent=Math.round(parseFloat(t.bgm_volume)*100)+'%';
-  if(t.workers)E('wk').value=t.workers;
+  if(t.scenes){scenes=t.scenes.map(s=>({image:s.image||'',text:s.text||'',hold:s.hold||0}));paintScenes()}
+  if(t.voice)byId('v').value=t.voice;
+  if(t.speed)byId('sp').value=t.speed,byId('sv').textContent=parseFloat(t.speed).toFixed(2)+'x';
+  if(t.burn!==undefined)byId('bs').checked=t.burn;
+  if(t.resolution)byId('res').value=t.resolution;
+  if(t.title_card!==undefined)byId('tc').value=t.title_card||'';
+  if(t.end_card!==undefined)byId('ec').value=t.end_card||'';
+  if(t.card_duration!==undefined&&t.card_duration!==null&&t.card_duration!=='')byId('tcd').value=t.card_duration;
+  if(t.end_card_duration!==undefined&&t.end_card_duration!==null&&t.end_card_duration!=='')byId('ecd').value=t.end_card_duration;
+  if(t.bgm_volume!==undefined)byId('bvol').value=t.bgm_volume,byId('bv').textContent=Math.round(parseFloat(t.bgm_volume)*100)+'%';
+  if(t.workers)byId('wk').value=t.workers;
   if(t.subtitle_style)applySubStyleFromStr(t.subtitle_style);
   // BGM：列表可能尚未含该路径，直接挂 option
   if(t.bgm){
     await loadBGMList();
-    let sel=E('bgmSel'),found=false;
+    let sel=byId('bgmSel'),found=false;
     for(let opt of sel.options){
       if(opt.value===t.bgm||(opt.value&&t.bgm.endsWith((opt.value.split(/[\\/]/).pop()||'')))){
         opt.selected=true;found=true;break
@@ -897,7 +907,7 @@ async function delTemplate(id){
   showTemplates();
 }
 async function renameTemplate(id,oldName){
-  let el=E('tplName_'+id);
+  let el=byId('tplName_'+id);
   el.classList.add('editing');
   el.contentEditable=true;el.focus();document.execCommand('selectAll',false,null);
   let done=false;
@@ -918,19 +928,19 @@ async function renameTemplate(id,oldName){
 
 /* ── 导出/导入工程 ── */
 async function exportProject(){
-  document.querySelectorAll('.scene textarea').forEach((ta,i)=>{if(S[i])S[i].text=ta.value});
-  let valid=S.filter(s=>s.image);
+  document.querySelectorAll('.scene textarea').forEach((ta,i)=>{if(scenes[i])scenes[i].text=ta.value});
+  let valid=scenes.filter(s=>s.image);
   if(!valid.length){toast('没有场景可导出','warn');return}
-  let res=(E('res').value||'1920x1080').split('x');
-  let m={title:'narravid',width:parseInt(res[0]),height:parseInt(res[1]),tts_engine:ttsEngine,workers:parseInt(E('wk').value),
-    voice:E('v').value,speech_speed:parseFloat(E('sp').value),burn_subtitles:E('bs').checked,
-    bgm_volume:parseFloat(E('bvol').value),card_duration:parseFloat(E('tcd').value),
-    end_card_duration:parseFloat(E('ecd').value),
-    title_card:E('tc').value.trim()||'',
-    end_card:E('ec').value.trim()||'',
+  let res=(byId('res').value||'1920x1080').split('x');
+  let m={title:'narravid',width:parseInt(res[0]),height:parseInt(res[1]),tts_engine:ttsEngine,workers:parseInt(byId('wk').value),
+    voice:byId('v').value,speech_speed:parseFloat(byId('sp').value),burn_subtitles:byId('bs').checked,
+    bgm_volume:parseFloat(byId('bvol').value),card_duration:parseFloat(byId('tcd').value),
+    end_card_duration:parseFloat(byId('ecd').value),
+    title_card:byId('tc').value.trim()||'',
+    end_card:byId('ec').value.trim()||'',
     subtitle_style:buildSubStyleStr(),
     scenes:valid.map(s=>({image:s.image,text:s.text.trim(),hold_sec:s.hold||0}))};
-  let bgm=E('bgmSel').value||null;
+  let bgm=byId('bgmSel').value||null;
   toast('正在打包...','info');
   try{
     let resp=await fetch('/api/export',{method:'POST',headers:{'Content-Type':'application/json'},
@@ -963,26 +973,26 @@ async function importProject(){
       if(!resp.ok||d.error){toast(d.error||('导入失败 HTTP '+resp.status),'error');return}
       // 加载 manifest 到 UI
       let m=d.manifest;
-      S=m.scenes.map(s=>({image:s.image,text:s.text||'',hold:s.hold_sec||s.hold||0}));
+      scenes=m.scenes.map(s=>({image:s.image,text:s.text||'',hold:s.hold_sec||s.hold||0}));
       if(m.tts_engine)ttsEngine=m.tts_engine;
-      if(m.voice)E('v').value=m.voice;
-      if(m.speech_speed!==undefined&&m.speech_speed!==null&&m.speech_speed!==''){E('sp').value=m.speech_speed;E('sv').textContent=parseFloat(m.speech_speed).toFixed(2)+'x'}
-      if(m.workers!==undefined&&m.workers!==null&&m.workers!=='')E('wk').value=m.workers;
-      if(m.burn_subtitles!==undefined)E('bs').checked=m.burn_subtitles;
-      if(m.bgm_volume!==undefined){E('bvol').value=m.bgm_volume;E('bv').textContent=Math.round(parseFloat(m.bgm_volume)*100)+'%'}
-      if(m.card_duration!==undefined)E('tcd').value=m.card_duration;
-      if(m.end_card_duration!==undefined)E('ecd').value=m.end_card_duration;
-      if(m.title_card)E('tc').value=m.title_card;
-      if(m.end_card)E('ec').value=m.end_card;
+      if(m.voice)byId('v').value=m.voice;
+      if(m.speech_speed!==undefined&&m.speech_speed!==null&&m.speech_speed!==''){byId('sp').value=m.speech_speed;byId('sv').textContent=parseFloat(m.speech_speed).toFixed(2)+'x'}
+      if(m.workers!==undefined&&m.workers!==null&&m.workers!=='')byId('wk').value=m.workers;
+      if(m.burn_subtitles!==undefined)byId('bs').checked=m.burn_subtitles;
+      if(m.bgm_volume!==undefined){byId('bvol').value=m.bgm_volume;byId('bv').textContent=Math.round(parseFloat(m.bgm_volume)*100)+'%'}
+      if(m.card_duration!==undefined)byId('tcd').value=m.card_duration;
+      if(m.end_card_duration!==undefined)byId('ecd').value=m.end_card_duration;
+      if(m.title_card)byId('tc').value=m.title_card;
+      if(m.end_card)byId('ec').value=m.end_card;
       if(m.subtitle_style)applySubStyleFromStr(m.subtitle_style);
       if(m.width&&m.height){
         let res=m.width+'x'+m.height;
-        for(let opt of E('res').options){if(opt.value===res)opt.selected=true}
+        for(let opt of byId('res').options){if(opt.value===res)opt.selected=true}
       }
       // BGM：列表可能不含 project 子目录文件，直接挂上 option
       if(d.bgm){
         await loadBGMList();
-        let sel=E('bgmSel'),found=false;
+        let sel=byId('bgmSel'),found=false;
         for(let opt of sel.options){
           if(opt.value===d.bgm||(opt.value&&d.bgm.endsWith(opt.value.split(/[\\/]/).pop()))){
             opt.selected=true;found=true;break
@@ -994,7 +1004,7 @@ async function importProject(){
           sel.appendChild(o);sel.value=d.bgm;
         }else{sel.value=d.bgm}
       }
-      pain();toast('已导入工程（'+S.length+' 个场景）','ok');
+      paintScenes();toast('已导入工程（'+scenes.length+' 个场景）','ok');
     }catch(e){toast('导入失败: '+e,'error')}
   };
   inp.click();
@@ -1288,6 +1298,44 @@ class H(SimpleHTTPRequestHandler):
         elif p.path == '/api/tts-check':
             engine, label = _check_edge_tts()
             self._json({'engine': engine, 'label': label})
+        elif p.path == '/api/health':
+            # Lightweight readiness for operators / reverse proxies
+            engine, label = _check_edge_tts()
+            ffmpeg_ok = False
+            ffprobe_ok = False
+            ffmpeg_path = ''
+            ffprobe_path = ''
+            try:
+                import shutil
+
+                import _bundled_ffmpeg as _bf
+                ffmpeg_path = _bf.get_ffmpeg()
+                ffprobe_path = _bf.get_ffprobe()
+                ffmpeg_ok = bool(shutil.which(ffmpeg_path) or Path(ffmpeg_path).is_file() or ffmpeg_path == 'ffmpeg')
+                ffprobe_ok = bool(shutil.which(ffprobe_path) or Path(ffprobe_path).is_file() or ffprobe_path == 'ffprobe')
+                # Prefer real existence when absolute
+                if Path(ffmpeg_path).is_file():
+                    ffmpeg_ok = True
+                if Path(ffprobe_path).is_file():
+                    ffprobe_ok = True
+            except Exception:
+                pass
+            font_path = None
+            try:
+                import video_auto as _va
+                font_path = _va._find_zh_font()
+            except Exception:
+                pass
+            ok = engine in ('edge', 'system') and ffmpeg_ok
+            self._json({
+                'ok': ok,
+                'tts': {'engine': engine, 'label': label},
+                'ffmpeg': {'ok': ffmpeg_ok, 'path': ffmpeg_path},
+                'ffprobe': {'ok': ffprobe_ok, 'path': ffprobe_path},
+                'font': {'ok': bool(font_path), 'path': font_path or ''},
+                'active_render': _get_active_render(),
+                'jobs': len(JOBS),
+            }, 200 if ok else 503)
         elif p.path.startswith('/api/templates'):
             self._handle_templates_get(p)
         elif p.path.startswith('/rendered/'):
@@ -1535,7 +1583,7 @@ class H(SimpleHTTPRequestHandler):
                             pass
                         msg = str(e)
                         prior = (j.get('error') or '').strip()
-                        # 超时诊断优先：mon 已写「渲染超时」时，即使随后用户点取消也不要盖成「已取消」
+                        # 超时诊断优先：monitor 已写「渲染超时」时，即使随后用户点取消也不要盖成「已取消」
                         if prior.startswith('渲染超时'):
                             j['progress'] = j.get('progress') or '超时（渲染卡死）'
                             # 保留 prior error；cancelled 标志可并存，供 UI 区分
@@ -1565,7 +1613,7 @@ class H(SimpleHTTPRequestHandler):
                             del os.environ['NARRAVID_PROGRESS_FILE']
                         j['done'] = True
 
-            def mon():
+            def monitor_job():
                 """监控线程：检查进度 + 超时检测"""
                 j = JOBS.get(rid)
                 if not j:
@@ -1609,7 +1657,7 @@ class H(SimpleHTTPRequestHandler):
 
             # 启动渲染线程和监控线程
             threading.Thread(target=run_in_thread, daemon=True).start()
-            threading.Thread(target=mon, daemon=True).start()
+            threading.Thread(target=monitor_job, daemon=True).start()
             # 延迟清理 JOBS（5 分钟后），避免内存泄漏
             def cleanup_job():
                 time.sleep(300)
@@ -1629,7 +1677,7 @@ class H(SimpleHTTPRequestHandler):
                 # 已成功/失败终态：忽略迟到 cancel，避免抹掉 video 或诊断文案
                 if j.get('done') and not j.get('cancelled'):
                     self._json({'status': 'ok', 'ignored': True}); return
-                # 先设置取消信号，再标记 done，避免 mon() 提前退出错过取消
+                # 先设置取消信号，再标记 done，避免 monitor_job() 提前退出错过取消
                 if j.get('cancel_event'):
                     j['cancel_event'].set()
                 # 只取消“当前正在执行”的 job 的全局 token；排队中的 job 仅靠 done 跳过
@@ -1683,7 +1731,8 @@ class H(SimpleHTTPRequestHandler):
 
         elif p.path == '/api/export':
             # 导出工程：manifest + 所有引用的图片/视频 + BGM 打包成 zip
-            import zipfile, tempfile
+            import tempfile
+            import zipfile
             data = json.loads(body)
             m = data.get('manifest', {})
             bgm = data.get('bgm')
@@ -1759,14 +1808,15 @@ class H(SimpleHTTPRequestHandler):
             zip_data = zip_buf.getvalue()
             self.send_response(200)
             self.send_header('Content-Type', 'application/zip')
-            self.send_header('Content-Disposition', f'attachment; filename="narravid_project.zip"')
+            self.send_header('Content-Disposition', 'attachment; filename="narravid_project.zip"')
             self.send_header('Content-Length', str(len(zip_data)))
             self.end_headers()
             self.wfile.write(zip_data)
 
         elif p.path == '/api/import':
             # 导入工程：上传 zip，解压到 uploads 新目录，返回修正路径后的 manifest
-            import zipfile, tempfile
+            import tempfile
+            import zipfile
             data = json.loads(body)
             b64 = data.get('data', '')
             try:
@@ -1972,7 +2022,7 @@ def main():
     print(f'narravid Web UI: {url}')
     if args.host in ('0.0.0.0', '::'):
         print(f'  监听 {args.host}:{args.port}（局域网/容器可访问；内网请加反代鉴权）')
-    print(f'  在浏览器打开上述地址即可')
+    print('  在浏览器打开上述地址即可')
     # 环境探测放到后台，避免阻塞首包/accept
     def _env_probe():
         try:

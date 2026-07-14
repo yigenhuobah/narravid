@@ -5,9 +5,9 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from tests.support import ROOT, write_tiny_png
 import video_auto
 import webui
+from tests.support import ROOT, write_tiny_png
 
 
 class TestAtempo(unittest.TestCase):

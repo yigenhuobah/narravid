@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [v1.10.2] - 2026-07-14
+
 ### Fixed — 深度审计跟进
 
 - **`video_auto.main(argv=...)`**：WebUI 不再改写全局 `sys.argv` 驱动渲染

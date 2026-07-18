@@ -60,3 +60,28 @@ combine-as-imports = true
 quote-style = "preserve"
 indent-style = "space"
 line-ending = "auto"
+
+[tool.coverage.run]
+branch = true
+source = ["."]
+relative_files = true
+omit = [
+  "tests/*",
+  "run_tests.py",
+  "test_e2e.py",
+  "test_regressions.py",
+  "_smoke_test.py",
+  "_test_*.py",
+  "_check_*.py",
+  "_debug_*.py",
+  "_ux_*.py",
+  "_verify_fix.py",
+  # HTML/JS lives in one Python string, so Python execution coverage is meaningless.
+  "webui_ui.py",
+]
+
+[tool.coverage.report]
+fail_under = 75
+precision = 1
+show_missing = true
+skip_empty = true

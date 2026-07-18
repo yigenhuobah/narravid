@@ -9,35 +9,45 @@ import argparse
 import base64
 import io
 import json
+import math
 import os
 import re
 import shutil
 import sys
+import tempfile
 import threading
 import time
 import urllib.parse
 import uuid
+import zipfile
 from http.server import HTTPServer, SimpleHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
 from webui_jobs import (  # re-export for tests / external importers
+    AUDIO_FILE_EXTS,
     JOBS,
     MAX_BGM_SIZE,
     MAX_IMAGE_SIZE,
+    MAX_PENDING_JOBS,
     MAX_TEMPLATE_BODY,
     MAX_UPLOAD_SIZE,
     MAX_VIDEO_SIZE,
+    MEDIA_FILE_EXTS,
     OUT_BASE,
     PACKAGE_ROOT,
     RENDER_LOCK,
     ROOT,
+    SCENE_FILE_EXTS,
     STALL_SECONDS,
     STALL_TICKS,
     TEMPLATE_DIR,
     THUMB_ALLOWED_DIRS,
     UPLOAD_DIR,
+    VIDEO_FILE_EXTS,
+    RenderQueueFullError,
     _check_edge_tts,
     _get_active_render,
+    _install_reserved_job,
     _is_exportable_media,
     _is_under,
     _is_under_any,
@@ -46,7 +56,11 @@ from webui_jobs import (  # re-export for tests / external importers
     _looks_like_cancel,
     _mark_job_cancelled,
     _pick_final_mp4,
+    _protected_render_ids,
+    _prune_finished_jobs,
     _public_media_url,
+    _release_render_id,
+    _reserve_render_id,
     _resolve_media_path,
     _sanitize_render_id,
     _sanitize_upload_name,
@@ -58,6 +72,25 @@ from webui_ui import HTML
 
 # video_auto.py lives in package root (source tree or frozen extract dir)
 SCRIPT = PACKAGE_ROOT / 'video_auto.py'
+
+def _reject_json_constant(value: str):
+    raise ValueError(f'non-finite JSON number: {value}')
+
+
+def _parse_finite_json_float(value: str) -> float:
+    parsed = float(value)
+    if not math.isfinite(parsed):
+        raise ValueError(f'non-finite JSON number: {value}')
+    return parsed
+
+
+def _json_loads(value):
+    return json.loads(
+        value,
+        parse_constant=_reject_json_constant,
+        parse_float=_parse_finite_json_float,
+    )
+
 
 def _write_b64_to_file(b64: str, dest: Path, max_bytes: int) -> int:
     """Decode base64 in chunks to dest; enforce max_bytes. Returns size written."""
@@ -82,7 +115,7 @@ def _write_b64_to_file(b64: str, dest: Path, max_bytes: int) -> int:
                 continue
             piece, buf = data[:take], data[take:]
             try:
-                raw = base64.b64decode(piece, validate=False)
+                raw = base64.b64decode(piece, validate=True)
             except Exception as e:
                 raise ValueError('base64 解码失败') from e
             written += len(raw)
@@ -92,7 +125,7 @@ def _write_b64_to_file(b64: str, dest: Path, max_bytes: int) -> int:
         if buf:
             pad = (-len(buf)) % 4
             try:
-                raw = base64.b64decode(buf + ('=' * pad), validate=False)
+                raw = base64.b64decode(buf + ('=' * pad), validate=True)
             except Exception as e:
                 raise ValueError('base64 解码失败') from e
             written += len(raw)
@@ -106,30 +139,14 @@ def _write_b64_to_file(b64: str, dest: Path, max_bytes: int) -> int:
 class WebUIHandler(SimpleHTTPRequestHandler):
     def do_HEAD(self):
         """Same access policy as GET — never fall through to SimpleHTTPRequestHandler."""
-        # Reuse GET handlers which call _file/_json; for HEAD only headers matter.
-        # Temporarily wrap _file to skip body.
-        orig_file = self._file
-        def _head_file(fp, ct, as_attachment=False):
-            self.send_response(200)
-            self.send_header('Content-Type', ct)
-            if as_attachment:
-                self.send_header('Content-Disposition', f'attachment; filename="{fp.name}"')
-            else:
-                self.send_header('Content-Disposition', f'inline; filename="{fp.name}"')
-            try:
-                size = fp.stat().st_size
-            except Exception:
-                size = 0
-            self.send_header('Content-Length', str(size))
-            self.send_header('Cache-Control', 'max-age=3600')
-            self.end_headers()
-        self._file = _head_file  # type: ignore[method-assign]
+        self._head_only = True
         try:
             self.do_GET()
         finally:
-            self._file = orig_file  # type: ignore[method-assign]
+            self._head_only = False
 
     def do_GET(self):
+        _prune_finished_jobs()
         p = urllib.parse.urlparse(self.path)
         if p.path == '/' or p.path == '/index.html':
             self._html(HTML)
@@ -149,25 +166,25 @@ class WebUIHandler(SimpleHTTPRequestHandler):
                         pass
                 if not allowed:
                     self._json({'error': 'forbidden'}, 403); return
+                if fp.suffix.lower() not in SCENE_FILE_EXTS:
+                    self._json({'error': 'forbidden'}, 403); return
                 if fp.exists() and fp.is_file():
                     # 按文件类型设置正确的 Content-Type
                     ext = fp.suffix.lower()
-                    if ext in ('.mp4',):
-                        ct = 'video/mp4'
-                    elif ext in ('.webm',):
-                        ct = 'video/webm'
-                    elif ext in ('.mov',):
-                        ct = 'video/quicktime'
-                    elif ext in ('.mkv',):
-                        ct = 'video/x-matroska'
-                    elif ext == '.png':
-                        ct = 'image/png'
-                    elif ext in ('.jpg', '.jpeg'):
-                        ct = 'image/jpeg'
-                    elif ext in ('.gif',):
-                        ct = 'image/gif'
-                    else:
-                        ct = 'application/octet-stream'
+                    ct = {
+                        '.mp4': 'video/mp4',
+                        '.webm': 'video/webm',
+                        '.mov': 'video/quicktime',
+                        '.mkv': 'video/x-matroska',
+                        '.avi': 'video/x-msvideo',
+                        '.flv': 'video/x-flv',
+                        '.png': 'image/png',
+                        '.jpg': 'image/jpeg',
+                        '.jpeg': 'image/jpeg',
+                        '.gif': 'image/gif',
+                        '.webp': 'image/webp',
+                        '.bmp': 'image/bmp',
+                    }.get(ext, 'application/octet-stream')
                     self._file(fp, ct)
                     return
             self._json({'error': 'not found'}, 404)
@@ -233,16 +250,9 @@ class WebUIHandler(SimpleHTTPRequestHandler):
         elif p.path == '/api/bgm-list':
             bgms = []
             # 递归：含导入工程 project_*/assets 下的 BGM
-            seen = set()
-            for pattern in ('**/*.mp3', '**/*.wav'):
-                for f in sorted(UPLOAD_DIR.glob(pattern)):
-                    if not f.is_file():
-                        continue
-                    key = str(f.resolve())
-                    if key in seen:
-                        continue
-                    seen.add(key)
-                    bgms.append({'name': f.name, 'path': key})
+            for f in sorted(UPLOAD_DIR.rglob('*')):
+                if f.is_file() and f.suffix.lower() in AUDIO_FILE_EXTS:
+                    bgms.append({'name': f.name, 'path': str(f.resolve())})
             self._json(bgms)
         elif p.path == '/api/tts-check':
             engine, label = _check_edge_tts()
@@ -337,30 +347,126 @@ class WebUIHandler(SimpleHTTPRequestHandler):
             self._json({'error': 'not found'}, 404)
 
     def do_POST(self):
+        self._post_error_cleanup = None
+        self._reserved_render_id = None
+        self._pending_render_out = None
         try:
             self._do_POST_impl()
-        except Exception as e:
+        except (zipfile.BadZipFile, RuntimeError, NotImplementedError):
+            cleanup = self._post_error_cleanup
+            if cleanup is not None:
+                shutil.rmtree(cleanup, ignore_errors=True)
+                self._json({'error': 'invalid zip archive'}, 400)
+            else:
+                import traceback
+                traceback.print_exc()
+                self._json({'error': 'server error'}, 500)
+        except Exception:
+            cleanup = self._post_error_cleanup
+            if cleanup is not None:
+                shutil.rmtree(cleanup, ignore_errors=True)
             import traceback
             traceback.print_exc()
-            self._json({'error': f'server error: {e}'}, 500)
+            self._json({'error': 'server error'}, 500)
+        finally:
+            self._post_error_cleanup = None
+            pending_out = self._pending_render_out
+            if pending_out is not None:
+                shutil.rmtree(pending_out, ignore_errors=True)
+            self._pending_render_out = None
+            _release_render_id(self._reserved_render_id)
+            self._reserved_render_id = None
+
+    def _read_request_body(self, max_bytes: int):
+        raw_length = self.headers.get('Content-Length', '0')
+        try:
+            length = int(raw_length)
+        except (TypeError, ValueError):
+            self._json({'error': 'invalid Content-Length'}, 400)
+            return None
+        if length < 0:
+            self._json({'error': 'invalid Content-Length'}, 400)
+            return None
+        if length > max_bytes:
+            self._json({'error': f'request body exceeds {max_bytes} bytes'}, 413)
+            return None
+        content_type = (self.headers.get('Content-Type', '') or '').split(';', 1)[0].strip().lower()
+        if content_type != 'application/json':
+            self._json({'error': 'Content-Type must be application/json'}, 415)
+            return None
+        body = self.rfile.read(length) if length else b''
+        if len(body) != length:
+            self._json({'error': 'incomplete request body'}, 400)
+            return None
+        return body
+
+    def _read_json_object(self, body: bytes):
+        try:
+            data = _json_loads(body)
+        except (RecursionError, UnicodeDecodeError, ValueError):
+            self._json({'error': 'request body is not valid JSON'}, 400)
+            return None
+        if not isinstance(data, dict):
+            self._json({'error': 'JSON request body must be an object'}, 400)
+            return None
+        return data
+
+    def _reserve_job_output(self, requested_rid: str | None):
+        candidate = requested_rid
+        while True:
+            if not candidate:
+                candidate = uuid.uuid4().hex
+            if not _reserve_render_id(candidate):
+                candidate = None
+                continue
+            out = _job_out_dir(candidate)
+            if out is None:
+                _release_render_id(candidate)
+                candidate = None
+                continue
+            try:
+                out.mkdir(parents=True, exist_ok=False)
+            except FileExistsError:
+                _release_render_id(candidate)
+                candidate = None
+                continue
+            except Exception:
+                _release_render_id(candidate)
+                raise
+            self._reserved_render_id = candidate
+            self._pending_render_out = out
+            return candidate, out
 
     def _do_POST_impl(self):
+        _prune_finished_jobs()
         p = urllib.parse.urlparse(self.path)
-        length = int(self.headers.get('Content-Length', 0))
-        if length > MAX_UPLOAD_SIZE:
-            self._json({'error': f'文件过大（上限 {MAX_UPLOAD_SIZE // 1024 // 1024}MB）'}, 413)
+        max_body = MAX_TEMPLATE_BODY if p.path == '/api/templates' else MAX_UPLOAD_SIZE
+        body = self._read_request_body(max_body)
+        if body is None:
             return
-        body = self.rfile.read(length) if length else b''
 
         if p.path == '/api/upload':
-            data = json.loads(body)
+            data = self._read_json_object(body)
+            if data is None:
+                return
             name = data.get('name', 'image.png')
             b64 = data.get('data', '')
             kind = data.get('kind', 'image')
+            if not isinstance(name, str):
+                self._json({'error': 'upload name must be a string'}, 400)
+                return
             ext = Path(name).suffix.lower()
-            video_exts = {'.mp4', '.mov', '.mkv', '.avi', '.webm', '.flv'}
-            is_video = kind == 'video' or ext in video_exts
-            if kind == 'bgm' or ext in {'.mp3', '.wav', '.aac', '.m4a', '.flac', '.ogg'}:
+            if ext not in MEDIA_FILE_EXTS:
+                self._json({'error': 'unsupported media extension'}, 400)
+                return
+            if kind == 'bgm' and ext not in AUDIO_FILE_EXTS:
+                self._json({'error': 'BGM must use a supported audio extension'}, 400)
+                return
+            if kind == 'video' and ext not in VIDEO_FILE_EXTS:
+                self._json({'error': 'video must use a supported video extension'}, 400)
+                return
+            is_video = kind == 'video' or ext in VIDEO_FILE_EXTS
+            if kind == 'bgm' or ext in AUDIO_FILE_EXTS:
                 max_bytes = MAX_BGM_SIZE
                 kind_label = 'BGM'
             elif is_video:
@@ -387,7 +493,9 @@ class WebUIHandler(SimpleHTTPRequestHandler):
             self._json({'path': str(fp), 'size': size})
 
         elif p.path == '/api/render':
-            data = json.loads(body)
+            data = self._read_json_object(body)
+            if data is None:
+                return
             m = data.get('manifest', {})
             if not isinstance(m, dict):
                 self._json({'error': 'manifest 必须是对象'}, 400); return
@@ -399,28 +507,39 @@ class WebUIHandler(SimpleHTTPRequestHandler):
                 if not isinstance(scene, dict):
                     self._json({'error': f'scenes[{i}] 必须是对象'}, 400); return
                 img = scene.get('image', '')
-                if not img:
+                if not isinstance(img, str) or not img:
                     self._json({'error': f'scenes[{i}] 缺少 image'}, 400); return
                 resolved = _resolve_media_path(img)
                 if not resolved:
                     self._json({'error': f'非法媒体路径: {img}'}, 400); return
+                if resolved.suffix.lower() not in SCENE_FILE_EXTS:
+                    self._json({'error': f'unsupported scene media: {img}'}, 400); return
                 scene['image'] = str(resolved)
             bgm = data.get('bgm')
+            if bgm is not None and not isinstance(bgm, str):
+                self._json({'error': 'bgm must be a string'}, 400)
+                return
             if bgm:
                 bp = _resolve_media_path(bgm)
                 if not bp:
                     self._json({'error': f'非法 BGM 路径: {bgm}'}, 400); return
+                if bp.suffix.lower() not in AUDIO_FILE_EXTS:
+                    self._json({'error': f'unsupported BGM media: {bgm}'}, 400); return
                 bgm = str(bp)
             tc = data.get('title_card')
             ec = data.get('end_card')
-            rid = _sanitize_render_id(data.get('render_id'))
-            # 防止客户端 render_id 碰撞 / 非法：重生 UUID
-            if not rid or rid in JOBS:
-                rid = uuid.uuid4().hex
-            out = _job_out_dir(rid)
-            if out is None:
-                self._json({'error': '非法 render_id'}, 400); return
-            out.mkdir(parents=True, exist_ok=True)
+            if tc is not None and not isinstance(tc, str):
+                self._json({'error': 'title_card must be a string'}, 400)
+                return
+            if ec is not None and not isinstance(ec, str):
+                self._json({'error': 'end_card must be a string'}, 400)
+                return
+            requested_rid = _sanitize_render_id(data.get('render_id'))
+            try:
+                rid, out = self._reserve_job_output(requested_rid)
+            except RenderQueueFullError:
+                self._json({'error': f'render queue is full (max {MAX_PENDING_JOBS})'}, 429)
+                return
             mp = out / 'manifest.json'
             try:
                 import video_auto as _va_norm
@@ -491,16 +610,18 @@ class WebUIHandler(SimpleHTTPRequestHandler):
                 cmd += ['--workers', str(wk)]
             progress_file = out / '_progress.txt'
             progress_file.write_text('初始化...', encoding='utf-8')
-            env = os.environ.copy()
-            env['NARRAVID_PROGRESS_FILE'] = str(progress_file)
 
             # 在子线程中直接调用 video_auto.main()，不再用 subprocess
             # 这样 exe 模式下无需依赖 sys.executable 指向 python 解释器
             cancel_event = threading.Event()
-            JOBS[rid] = {'proc': None, 'progress': 'TTS 生成中...', 'video': '', 'srt': '',
-                         'progress_file': str(progress_file), 'out': out,
-                         'cancel_event': cancel_event, 'done': False, 'error': '',
-                         'cancelled': False}
+            job = {'proc': None, 'progress': 'TTS 生成中...', 'video': '', 'srt': '',
+                   'progress_file': str(progress_file), 'out': out,
+                   'cancel_event': cancel_event, 'done': False, 'error': '',
+                   'cancelled': False, '_runner_active': True,
+                   '_monitor_active': False}
+            _install_reserved_job(rid, job)
+            self._pending_render_out = None
+            self._reserved_render_id = None
 
             # 环境变量：只设 progress_file；main(argv=...) 避免改写全局 sys.argv
             progress_env_val = str(progress_file)
@@ -529,6 +650,7 @@ class WebUIHandler(SimpleHTTPRequestHandler):
                     if j.get('cancelled') or (j.get('cancel_event') and j['cancel_event'].is_set()):
                         _va.CancelToken.set_cancelled()
                     # 路径均为绝对/可解析；不再 chdir，避免污染进程工作目录
+                    previous_progress_env = os.environ.get('NARRAVID_PROGRESS_FILE')
                     try:
                         os.environ['NARRAVID_PROGRESS_FILE'] = progress_env_val
                         _va.main(main_argv)
@@ -613,8 +735,10 @@ class WebUIHandler(SimpleHTTPRequestHandler):
                             _va.CancelToken.reset()
                         except Exception:
                             pass
-                        if 'NARRAVID_PROGRESS_FILE' in os.environ:
-                            del os.environ['NARRAVID_PROGRESS_FILE']
+                        if previous_progress_env is None:
+                            os.environ.pop('NARRAVID_PROGRESS_FILE', None)
+                        else:
+                            os.environ['NARRAVID_PROGRESS_FILE'] = previous_progress_env
                         # surface BGM soft-failure warnings if any
                         try:
                             wf = Path(j.get('out') or out) / '_warnings.txt'
@@ -624,6 +748,20 @@ class WebUIHandler(SimpleHTTPRequestHandler):
                             pass
                         j['done'] = True
 
+            def run_job_thread():
+                try:
+                    run_in_thread()
+                except BaseException as e:
+                    if not job.get('done'):
+                        job['done'] = True
+                        job['error'] = f'render thread failed before startup: {e}'[:500]
+                        job['progress'] = '启动渲染失败'
+                finally:
+                    if _get_active_render() == rid:
+                        _set_active_render(None)
+                    job['_runner_active'] = False
+                    cancel_event.set()
+
             def monitor_job():
                 """监控线程：检查进度 + 超时检测"""
                 j = JOBS.get(rid)
@@ -632,7 +770,11 @@ class WebUIHandler(SimpleHTTPRequestHandler):
                 last_progress = ''
                 stall_count = 0
                 while not j.get('done'):
-                    time.sleep(2)
+                    cancel_event = j.get('cancel_event')
+                    if cancel_event is not None:
+                        cancel_event.wait(2)
+                    else:
+                        time.sleep(2)
                     if j.get('done'):
                         break
                     # 仍在排队（未持有 RENDER_LOCK）时不计超时，避免“排队 3 分钟被误判卡死”
@@ -666,19 +808,35 @@ class WebUIHandler(SimpleHTTPRequestHandler):
                         _mark_job_cancelled(j)
                         return
 
+            def monitor_job_thread():
+                try:
+                    monitor_job()
+                finally:
+                    job['_monitor_active'] = False
+
             # 启动渲染线程和监控线程
-            threading.Thread(target=run_in_thread, daemon=True).start()
-            threading.Thread(target=monitor_job, daemon=True).start()
-            # 延迟清理 JOBS（5 分钟后），避免内存泄漏
-            def cleanup_job():
-                time.sleep(300)
-                j = JOBS.get(rid)
-                # done 可能被 cancel/stall 提前置位，但线程仍可能在跑；active 时不清理
-                if j and (not j.get('done') or _get_active_render() == rid):
-                    threading.Thread(target=cleanup_job, daemon=True).start()
-                    return
-                JOBS.pop(rid, None)
-            threading.Thread(target=cleanup_job, daemon=True).start()
+            runner_started = False
+            monitor_started = False
+            try:
+                runner_thread = threading.Thread(target=run_job_thread, daemon=True)
+                monitor_thread = threading.Thread(target=monitor_job_thread, daemon=True)
+                runner_thread.start()
+                runner_started = True
+                job['_monitor_active'] = True
+                monitor_thread.start()
+                monitor_started = True
+            except Exception as e:
+                if not runner_started:
+                    job['_runner_active'] = False
+                if not monitor_started:
+                    job['_monitor_active'] = False
+                job['done'] = True
+                job['error'] = f'failed to start render threads: {e}'[:500]
+                job['progress'] = '启动渲染线程失败'
+                cancel_event.set()
+                _signal_cancel_token_if_active(rid)
+                self._json({'error': 'failed to start render threads', 'render_id': rid}, 503)
+                return
             self._json({'render_id': rid})
 
         elif p.path.startswith('/api/cancel'):
@@ -698,61 +856,82 @@ class WebUIHandler(SimpleHTTPRequestHandler):
 
         elif p.path == '/api/clean':
             cleaned = 0
-            # 进行中 / 排队中的任务目录不可删
+            candidates = []
+            for directory in OUT_BASE.iterdir():
+                if directory.name in ('uploads', 'templates'):
+                    continue
+                try:
+                    if directory.is_dir():
+                        candidates.append((directory.stat().st_mtime, directory))
+                except OSError:
+                    continue
+            dirs = [
+                directory
+                for _mtime, directory in sorted(candidates, key=lambda item: item[0], reverse=True)
+            ]
+
+            # Enumerate first, then snapshot protected IDs. New reservations created
+            # after this snapshot cannot appear in the already-enumerated dirs.
             protected = set()
-            for j in list(JOBS.values()):
-                outp = j.get('out') if isinstance(j, dict) else None
-                if outp:
-                    try:
-                        protected.add(str(Path(outp).resolve()))
-                    except Exception:
-                        pass
-            # 按修改时间排序，保留最近 5 次
-            dirs = sorted(
-                [d for d in OUT_BASE.iterdir() if d.is_dir() and d.name not in ('uploads', 'templates')],
-                key=lambda d: d.stat().st_mtime, reverse=True
-            )
+            for protected_rid in _protected_render_ids():
+                protected_out = _job_out_dir(protected_rid)
+                if protected_out is not None:
+                    protected.add(str(protected_out.resolve()))
+
             keep = set()
-            for d in dirs[:5]:
+            for directory in dirs[:5]:
                 try:
-                    keep.add(str(d.resolve()))
-                except Exception:
+                    keep.add(str(directory.resolve()))
+                except OSError:
                     pass
-            for d in dirs:
+            for directory in dirs:
                 try:
-                    key = str(d.resolve())
-                except Exception:
+                    key = str(directory.resolve())
+                except OSError:
                     continue
                 if key in keep or key in protected:
                     continue
-                shutil.rmtree(d, ignore_errors=True)
+                try:
+                    shutil.rmtree(directory)
+                except (FileNotFoundError, OSError):
+                    continue
                 cleaned += 1
             self._json({'message': f'已清理 {cleaned} 个旧渲染，保留最近 5 个及进行中任务', 'cleaned': cleaned})
 
         elif p.path == '/api/templates':
             # POST = save template
-            data = json.loads(body)
+            data = self._read_json_object(body)
+            if data is None:
+                return
+            scenes = data.get('scenes', [])
+            if not isinstance(scenes, list) or any(not isinstance(scene, dict) for scene in scenes):
+                self._json({'error': 'template scenes must be a list of objects'}, 400)
+                return
             tid = uuid.uuid4().hex[:8]
             tp = TEMPLATE_DIR / f'{tid}.json'
             data['id'] = tid
             data['date'] = time.strftime('%Y-%m-%d %H:%M')
-            data['count'] = len(data.get('scenes', []))
+            data['count'] = len(scenes)
             tp.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding='utf-8')
             self._json({'id': tid})
 
         elif p.path == '/api/export':
             # 导出工程：manifest + 所有引用的图片/视频 + BGM 打包成 zip
-            import tempfile
-            import zipfile
-            data = json.loads(body)
+            data = self._read_json_object(body)
+            if data is None:
+                return
             m = data.get('manifest', {})
-            bgm = data.get('bgm')
-            # 创建临时 zip
-            zip_buf = io.BytesIO()
-            zf = zipfile.ZipFile(zip_buf, 'w', zipfile.ZIP_DEFLATED)
+            if not isinstance(m, dict):
+                self._json({'error': 'manifest must be an object'}, 400)
+                return
+            scenes = m.get('scenes')
+            if not isinstance(scenes, list) or not scenes:
+                self._json({'error': 'manifest.scenes must be a non-empty list'}, 400)
+                return
+            bgm = data['bgm'] if 'bgm' in data else m.get('bgm')
             # 收集需要打包的文件及其新路径
             collected = {}  # abs_path -> zip_relative_path
-            manifest_copy = json.loads(json.dumps(m))  # deep copy
+            manifest_copy = _json_loads(json.dumps(m, allow_nan=False))  # deep copy
             # 确保标题页/封尾页写入 manifest（兼容 body 顶层字段）
             if data.get('title_card') and not manifest_copy.get('title_card'):
                 manifest_copy['title_card'] = data.get('title_card')
@@ -769,7 +948,7 @@ class WebUIHandler(SimpleHTTPRequestHandler):
                 if not isinstance(scene, dict):
                     self._json({'error': f'scenes[{i}] 必须是对象'}, 400); return
                 img = scene.get('image', '')
-                if not img:
+                if not isinstance(img, str) or not img:
                     self._json({'error': f'scenes[{i}] 缺少 image，无法导出'}, 400); return
                 img_path = Path(img)
                 if not img_path.is_absolute():
@@ -778,6 +957,9 @@ class WebUIHandler(SimpleHTTPRequestHandler):
                     img_path = img_path.resolve()
                 except Exception:
                     self._json({'error': f'无法解析媒体路径: {img}'}, 400); return
+                if img_path.suffix.lower() not in SCENE_FILE_EXTS:
+                    self._json({'error': f'unsupported scene media: {Path(img).name}'}, 400)
+                    return
                 if not _exportable(img_path):
                     # 禁止把本机绝对路径写进 zip manifest（路径泄漏 + 坏导入）
                     self._json({
@@ -789,6 +971,9 @@ class WebUIHandler(SimpleHTTPRequestHandler):
                     collected[str(img_path)] = zname
                 scene['image'] = collected[str(img_path)]
             # BGM
+            if bgm is not None and not isinstance(bgm, str):
+                self._json({'error': 'BGM path must be a string'}, 400)
+                return
             if bgm:
                 bgm_path = Path(bgm)
                 if not bgm_path.is_absolute():
@@ -797,6 +982,9 @@ class WebUIHandler(SimpleHTTPRequestHandler):
                     bgm_path = bgm_path.resolve()
                 except Exception:
                     self._json({'error': f'无法解析 BGM 路径: {bgm}'}, 400); return
+                if bgm_path.suffix.lower() not in AUDIO_FILE_EXTS:
+                    self._json({'error': f'unsupported BGM media: {Path(bgm).name}'}, 400)
+                    return
                 if not _exportable(bgm_path):
                     self._json({
                         'error': f'无法导出：BGM 不在允许目录: {Path(bgm).name}'
@@ -804,33 +992,52 @@ class WebUIHandler(SimpleHTTPRequestHandler):
                 zname = f'assets/bgm{bgm_path.suffix}'
                 collected[str(bgm_path)] = zname
                 manifest_copy['bgm'] = zname
+            else:
+                manifest_copy.pop('bgm', None)
             # 写入 manifest（仅含 zip 内相对路径，无宿主绝对路径）
-            zf.writestr('manifest.json', json.dumps(manifest_copy, ensure_ascii=False, indent=2))
-            # 写入所有媒体文件
-            for abs_path, zname in collected.items():
-                zf.write(abs_path, zname)
-            zf.close()
-            zip_data = zip_buf.getvalue()
-            self.send_response(200)
-            self.send_header('Content-Type', 'application/zip')
-            self.send_header('Content-Disposition', 'attachment; filename="narravid_project.zip"')
-            self.send_header('Content-Length', str(len(zip_data)))
-            self.end_headers()
-            self.wfile.write(zip_data)
+            with tempfile.SpooledTemporaryFile(max_size=8 * 1024 * 1024) as zip_buf:
+                with zipfile.ZipFile(zip_buf, 'w', zipfile.ZIP_DEFLATED) as zf:
+                    zf.writestr(
+                        'manifest.json',
+                        json.dumps(manifest_copy, ensure_ascii=False, indent=2),
+                    )
+                    for abs_path, zname in collected.items():
+                        zf.write(abs_path, zname)
+                zip_size = zip_buf.tell()
+                zip_buf.seek(0)
+                self.send_response(200)
+                self.send_header('Content-Type', 'application/zip')
+                self.send_header(
+                    'Content-Disposition',
+                    'attachment; filename="narravid_project.zip"',
+                )
+                self.send_header('Content-Length', str(zip_size))
+                self.send_header('X-Content-Type-Options', 'nosniff')
+                self.end_headers()
+                while chunk := zip_buf.read(1024 * 1024):
+                    self.wfile.write(chunk)
 
         elif p.path == '/api/import':
             # 导入工程：上传 zip，解压到 uploads 新目录，返回修正路径后的 manifest
-            import tempfile
-            import zipfile
-            data = json.loads(body)
+            data = self._read_json_object(body)
+            if data is None:
+                return
             b64 = data.get('data', '')
             try:
-                zip_bytes = base64.b64decode(b64)
+                if not isinstance(b64, str):
+                    raise ValueError('base64 must be a string')
+                zip_bytes = base64.b64decode(b64, validate=True)
             except Exception:
                 self._json({'error': 'base64 解码失败'}, 400); return
-            project_id = uuid.uuid4().hex[:8]
-            project_dir = UPLOAD_DIR / f'project_{project_id}'
-            project_dir.mkdir(parents=True, exist_ok=True)
+            while True:
+                project_id = uuid.uuid4().hex
+                project_dir = UPLOAD_DIR / f'project_{project_id}'
+                try:
+                    project_dir.mkdir(parents=True, exist_ok=False)
+                    break
+                except FileExistsError:
+                    continue
+            self._post_error_cleanup = project_dir
             zip_buf = io.BytesIO(zip_bytes)
             try:
                 zf_ctx = zipfile.ZipFile(zip_buf, 'r')
@@ -892,38 +1099,66 @@ class WebUIHandler(SimpleHTTPRequestHandler):
             # 读取 manifest 并修正路径
             mp = project_dir / 'manifest.json'
             if not mp.exists():
+                shutil.rmtree(project_dir, ignore_errors=True)
                 self._json({'error': 'zip 中未找到 manifest.json'}, 400); return
-            manifest = json.loads(mp.read_text(encoding='utf-8'))
+            try:
+                manifest = _json_loads(mp.read_text(encoding='utf-8'))
+            except (OSError, RecursionError, UnicodeDecodeError, ValueError):
+                shutil.rmtree(project_dir, ignore_errors=True)
+                self._json({'error': 'manifest.json is not valid JSON'}, 400); return
             # 校验 manifest 基本结构
             if not isinstance(manifest, dict):
+                shutil.rmtree(project_dir, ignore_errors=True)
                 self._json({'error': 'manifest.json 不是有效 JSON 对象'}, 400); return
             scenes = manifest.get('scenes')
-            if not isinstance(scenes, list):
+            if not isinstance(scenes, list) or not scenes:
+                shutil.rmtree(project_dir, ignore_errors=True)
                 self._json({'error': 'manifest.scenes 不是数组'}, 400); return
             proj_root = project_dir.resolve()
             for scene in scenes:
                 if not isinstance(scene, dict):
+                    shutil.rmtree(project_dir, ignore_errors=True)
                     self._json({'error': 'manifest.scenes 项必须是对象'}, 400); return
                 img = scene.get('image', '')
                 if not img:
-                    continue
-                img_path = Path(img)
-                if not img_path.is_absolute():
-                    img_path = (project_dir / img_path).resolve()
-                else:
-                    img_path = img_path.resolve()
+                    shutil.rmtree(project_dir, ignore_errors=True)
+                    self._json({'error': 'manifest scene is missing image'}, 400)
+                    return
+                try:
+                    img_path = Path(img)
+                    if not img_path.is_absolute():
+                        img_path = (project_dir / img_path).resolve()
+                    else:
+                        img_path = img_path.resolve()
+                except (OSError, TypeError, ValueError):
+                    shutil.rmtree(project_dir, ignore_errors=True)
+                    self._json({'error': f'invalid media path: {img}'}, 400); return
                 if not _is_under(img_path, proj_root):
+                    shutil.rmtree(project_dir, ignore_errors=True)
                     self._json({'error': f'非法媒体路径: {img}'}, 400); return
+                if not img_path.is_file() or img_path.suffix.lower() not in SCENE_FILE_EXTS:
+                    shutil.rmtree(project_dir, ignore_errors=True)
+                    self._json({'error': f'invalid scene media: {img}'}, 400)
+                    return
                 scene['image'] = str(img_path)
             bgm_val = manifest.pop('bgm', None)
             if bgm_val:
-                bgm_path = Path(bgm_val)
-                if not bgm_path.is_absolute():
-                    bgm_path = (project_dir / bgm_path).resolve()
-                else:
-                    bgm_path = bgm_path.resolve()
+                try:
+                    bgm_path = Path(bgm_val)
+                    if not bgm_path.is_absolute():
+                        bgm_path = (project_dir / bgm_path).resolve()
+                    else:
+                        bgm_path = bgm_path.resolve()
+                except (OSError, TypeError, ValueError):
+                    shutil.rmtree(project_dir, ignore_errors=True)
+                    self._json({'error': f'invalid BGM path: {bgm_val}'}, 400); return
                 if not _is_under(bgm_path, proj_root):
+                    shutil.rmtree(project_dir, ignore_errors=True)
                     self._json({'error': f'非法 BGM 路径: {bgm_val}'}, 400); return
+                if not bgm_path.is_file() or bgm_path.suffix.lower() not in AUDIO_FILE_EXTS:
+                    shutil.rmtree(project_dir, ignore_errors=True)
+                    self._json({'error': f'invalid BGM media: {bgm_val}'}, 400)
+                    return
                 bgm_val = str(bgm_path)
             self._json({'manifest': manifest, 'bgm': bgm_val})
 
@@ -949,7 +1184,7 @@ class WebUIHandler(SimpleHTTPRequestHandler):
             tpls = []
             for f in sorted(TEMPLATE_DIR.glob('*.json')):
                 try:
-                    d = json.loads(f.read_text(encoding='utf-8'))
+                    d = _json_loads(f.read_text(encoding='utf-8'))
                     tpls.append({'id': d.get('id', f.stem), 'name': d.get('name', f.stem),
                                  'count': d.get('count', 0), 'date': d.get('date', '')})
                 except Exception:
@@ -960,24 +1195,24 @@ class WebUIHandler(SimpleHTTPRequestHandler):
             tid = p.path.split('/')[-1]
             tp = self._template_path(tid)
             if tp and tp.exists():
-                self._json(json.loads(tp.read_text(encoding='utf-8')))
+                self._json(_json_loads(tp.read_text(encoding='utf-8')))
             else:
                 self._json({'error': 'not found'}, 404)
 
     def do_PUT(self):
         p = urllib.parse.urlparse(self.path)
-        length = int(self.headers.get('Content-Length', 0))
-        if length > MAX_TEMPLATE_BODY:
-            self._json({'error': f'请求过大（上限 {MAX_TEMPLATE_BODY // 1024}KB）'}, 413)
+        body = self._read_request_body(MAX_TEMPLATE_BODY)
+        if body is None:
             return
-        body = self.rfile.read(length) if length else b''
         if p.path.startswith('/api/templates/'):
             tid = p.path.split('/')[-1]
             tp = self._template_path(tid)
             if not tp or not tp.exists():
                 self._json({'error': 'not found'}, 404); return
-            data = json.loads(body) if body else {}
-            tpl = json.loads(tp.read_text(encoding='utf-8'))
+            data = self._read_json_object(body) if body else {}
+            if data is None:
+                return
+            tpl = _json_loads(tp.read_text(encoding='utf-8'))
             if 'name' in data:
                 tpl['name'] = data['name']
             if 'subtitle_style' in data:
@@ -1001,22 +1236,48 @@ class WebUIHandler(SimpleHTTPRequestHandler):
             self._json({'error': 'not found'}, 404)
 
     def _html(self, html):
-        self.send_response(200); self.send_header('Content-Type', 'text/html; charset=utf-8'); self.end_headers()
-        self.wfile.write(html.encode('utf-8'))
+        body = html.encode('utf-8')
+        self.send_response(200)
+        self.send_header('Content-Type', 'text/html; charset=utf-8')
+        self.send_header('Content-Length', str(len(body)))
+        self.send_header('X-Content-Type-Options', 'nosniff')
+        self.end_headers()
+        if not getattr(self, '_head_only', False):
+            self.wfile.write(body)
 
     def _json(self, data, code=200):
-        self.send_response(code); self.send_header('Content-Type', 'application/json; charset=utf-8'); self.end_headers()
-        self.wfile.write(json.dumps(data, ensure_ascii=False).encode('utf-8'))
+        try:
+            body = json.dumps(data, ensure_ascii=False, allow_nan=False).encode('utf-8')
+        except (TypeError, ValueError):
+            code = 500
+            body = b'{"error":"server response is not valid JSON"}'
+        self.send_response(code)
+        self.send_header('Content-Type', 'application/json; charset=utf-8')
+        self.send_header('Content-Length', str(len(body)))
+        self.send_header('X-Content-Type-Options', 'nosniff')
+        self.end_headers()
+        if not getattr(self, '_head_only', False):
+            self.wfile.write(body)
 
     def _file(self, fp, ct, as_attachment=False):
         self.send_response(200); self.send_header('Content-Type', ct)
         # 缩略图/预览用 inline，下载类资源才 attachment
-        if as_attachment:
-            self.send_header('Content-Disposition', f'attachment; filename="{fp.name}"')
-        else:
-            self.send_header('Content-Disposition', f'inline; filename="{fp.name}"')
+        safe_name = re.sub(r'[^A-Za-z0-9._-]+', '_', fp.name).strip('._')[:180] or 'download'
+        disposition = 'attachment' if as_attachment else 'inline'
+        self.send_header('Content-Disposition', f'{disposition}; filename="{safe_name}"')
+        self.send_header('Content-Length', str(fp.stat().st_size))
         self.send_header('Cache-Control', 'max-age=3600')
-        self.end_headers(); self.wfile.write(fp.read_bytes())
+        self.send_header('X-Content-Type-Options', 'nosniff')
+        self.end_headers()
+        if not getattr(self, '_head_only', False):
+            with fp.open('rb') as source:
+                chunk = source.read(1024 * 1024)
+                while chunk:
+                    next_chunk = source.read(1024 * 1024)
+                    if not next_chunk:
+                        source.close()
+                    self.wfile.write(chunk)
+                    chunk = next_chunk
 
     def log_message(self, fmt, *args): pass
 

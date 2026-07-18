@@ -724,7 +724,7 @@ async function render(){
     // 若 await 期间用户已取消：用服务端 id 再发一次 cancel，勿启动成功轮询
     if(userCancelled){
       const realId=d.render_id||rid;
-      if(realId)fetch('/api/cancel/'+realId,{method:'POST'});
+      if(realId)fetch('/api/cancel/'+realId,{method:'POST',headers:{'Content-Type':'application/json'},body:'{}'});
       rid=null;byId('st').style.display='none';byId('rb').disabled=false;byId('pf').style.width='0';
       return;
     }
@@ -776,7 +776,7 @@ function cancel(){
   const cancelRid=rid;
   userCancelled=true; // 硬闸：后续 poll 成功一律丢弃
   clearTimeout(tmr);
-  if(cancelRid)fetch('/api/cancel/'+cancelRid,{method:'POST'});
+  if(cancelRid)fetch('/api/cancel/'+cancelRid,{method:'POST',headers:{'Content-Type':'application/json'},body:'{}'});
   byId('st').style.display='none';byId('pf').style.width='0';
   // 取消期间保持按钮禁用，直到确认服务端登记或超时，避免重叠 render
   let b=byId('rs');
@@ -983,7 +983,7 @@ async function importProject(){
 async function cleanOld(){
   if(!confirm('清理旧渲染文件？将保留最近 5 个及进行中任务，其余成片目录会被删除。'))return;
   try{
-    let r=await fetch('/api/clean',{method:'POST'});let d=await r.json();
+    let r=await fetch('/api/clean',{method:'POST',headers:{'Content-Type':'application/json'},body:'{}'});let d=await r.json();
     toast(d.message||'已清理',d.error?'error':'ok');
   }catch(e){toast('清理失败: '+e,'error')}
 }

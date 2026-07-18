@@ -41,9 +41,12 @@ curl -s http://127.0.0.1:5000/api/health | jq .
 
 1. `CHANGELOG.md`：把 `[Unreleased]` 收成 `## [vX.Y.Z] - YYYY-MM-DD`  
 2. 可选：`pyproject.toml` version  
-3. commit → `git tag vX.Y.Z` → `git push origin main --tags`  
-4. 等 workflow **Build & Release EXE**  
-5. Release 页应有 `narravid.exe` + `narravid-webui.exe`  
+3. 本地运行 `python run_tests.py --max` 与 `python test_e2e.py`
+4. commit → `git tag vX.Y.Z` → `git push origin main --tags`
+5. 等 workflow **Build & Release EXE**；它会再次执行 Ruff、全部非 legacy 测试层及 75% 分支覆盖率门禁
+6. Release 页应有 `narravid.exe`、`narravid-webui.exe` 与 `SHA256SUMS.txt`
+
+构建完成后，workflow 会启动冻结 WebUI，确认 `/api/health` 使用的是包内 ffmpeg/ffprobe，而不是 runner 的系统路径。
 
 版本习惯：功能/跨平台用 minor；质量/安全边角用 patch（1.10.x）。
 

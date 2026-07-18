@@ -4,7 +4,8 @@ narravid WebUI 全功能端到端测试脚本
 用法:
   python test_e2e.py
   python test_e2e.py --port 5001 --workers 2
-  python test_e2e.py --keep  (保留测试输出目录)
+  python test_e2e.py --keep  (在 test_output/ 下保留本次测试的唯一目录)
+  python test_e2e.py --base-url http://127.0.0.1:5000 --allow-destructive-existing-server
 
 测试内容:
   1. 启动 WebUI 服务
@@ -20,11 +21,15 @@ narravid WebUI 全功能端到端测试脚本
 import argparse
 import base64
 import json
-import shutil
+import os
+import signal
+import socket
 import subprocess
 import sys
+import tempfile
 import time
 import wave
+from contextlib import contextmanager
 from pathlib import Path
 from urllib.error import HTTPError
 from urllib.request import Request, urlopen
@@ -192,6 +197,151 @@ def wait_for_server(base_url: str, timeout: float = 15.0):
     return False
 
 
+@contextmanager
+def e2e_workspace(keep: bool, output_root: Path | None = None):
+    """Create one isolated run directory without touching earlier E2E output."""
+    if keep:
+        root = output_root or Path(__file__).resolve().parent / 'test_output'
+        root.mkdir(parents=True, exist_ok=True)
+        yield Path(tempfile.mkdtemp(prefix='e2e-', dir=root))
+        return
+
+    with tempfile.TemporaryDirectory(prefix='narravid-e2e-') as temp_dir:
+        yield Path(temp_dir)
+
+
+def local_port_available(port: int) -> bool:
+    """Return False when another process already owns the local test port."""
+    try:
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as listener:
+            exclusive = getattr(socket, 'SO_EXCLUSIVEADDRUSE', None)
+            if os.name == 'nt' and exclusive is not None:
+                listener.setsockopt(socket.SOL_SOCKET, exclusive, 1)
+            listener.bind(('127.0.0.1', port))
+        return True
+    except OSError:
+        return False
+
+
+def server_process_kwargs() -> dict:
+    """Put the WebUI in a process boundary that can be terminated as a tree."""
+    if os.name == 'nt':
+        return {'creationflags': getattr(subprocess, 'CREATE_NEW_PROCESS_GROUP', 0)}
+    return {'start_new_session': True}
+
+
+def start_webui_server(port: int, test_dir: Path):
+    """Start an isolated WebUI and redirect all output to a file."""
+    webui_script = Path(__file__).resolve().parent / 'webui.py'
+    log_path = test_dir / 'webui-server.log'
+    env = os.environ.copy()
+    env['NARRAVID_DATA_DIR'] = str(test_dir / 'server-data')
+    with log_path.open('wb', buffering=0) as log_file:
+        proc = subprocess.Popen(
+            [sys.executable, str(webui_script), '--host', '127.0.0.1', '--port', str(port)],
+            stdout=log_file,
+            stderr=subprocess.STDOUT,
+            env=env,
+            **server_process_kwargs(),
+        )
+    return proc, log_path
+
+
+def read_log_tail(log_path: Path, max_bytes: int = 16 * 1024) -> str:
+    """Read only the tail of a server log so diagnostics cannot exhaust memory."""
+    try:
+        with log_path.open('rb') as log_file:
+            log_file.seek(0, 2)
+            size = log_file.tell()
+            log_file.seek(max(0, size - max_bytes))
+            return log_file.read().decode('utf-8', 'replace').strip()
+    except OSError:
+        return ''
+
+
+def _terminate_directly(proc, timeout: float) -> None:
+    if proc.poll() is not None:
+        return
+    try:
+        proc.terminate()
+        proc.wait(timeout=timeout)
+        return
+    except Exception:
+        pass
+    if proc.poll() is None:
+        try:
+            proc.kill()
+            proc.wait(timeout=timeout)
+        except Exception:
+            pass
+
+
+def _process_group_exists(pgid: int) -> bool:
+    try:
+        os.killpg(pgid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    return True
+
+
+def _wait_for_process_group_exit(proc, timeout: float) -> bool:
+    deadline = time.monotonic() + timeout
+    while True:
+        proc.poll()  # Reap the parent so a zombie cannot keep the group alive.
+        if not _process_group_exists(proc.pid):
+            return True
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            return False
+        time.sleep(min(0.05, remaining))
+
+
+def terminate_process_tree(proc, timeout: float = 5.0) -> None:
+    """Best-effort termination of the WebUI and all media subprocesses."""
+    if proc is None:
+        return
+
+    if os.name == 'nt':
+        try:
+            subprocess.run(
+                ['taskkill', '/PID', str(proc.pid), '/T', '/F'],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                check=False,
+                timeout=timeout,
+            )
+            if proc.poll() is None:
+                proc.wait(timeout=timeout)
+        except Exception:
+            pass
+        _terminate_directly(proc, timeout)
+        return
+
+    try:
+        os.killpg(proc.pid, signal.SIGTERM)
+    except ProcessLookupError:
+        return
+    except Exception:
+        _terminate_directly(proc, timeout)
+        return
+
+    if _wait_for_process_group_exit(proc, timeout):
+        return
+
+    try:
+        os.killpg(proc.pid, getattr(signal, 'SIGKILL', 9))
+    except ProcessLookupError:
+        return
+    except Exception:
+        _terminate_directly(proc, timeout)
+        return
+
+    _wait_for_process_group_exit(proc, timeout)
+    _terminate_directly(proc, timeout)
+
+
 def run_tests(base_url: str, test_dir: Path, workers: int, result: TestResult):
     """运行全部测试用例"""
 
@@ -309,6 +459,7 @@ def run_tests(base_url: str, test_dir: Path, workers: int, result: TestResult):
         'title_card': 'narravid 全功能测试',
         'render_id': 'e2etest',
     }
+    render_started_at = time.monotonic()
     status, data = api_post(base_url, '/api/render', render_body)
     if status == 200 and 'render_id' in data:
         rid = data['render_id']
@@ -319,7 +470,7 @@ def run_tests(base_url: str, test_dir: Path, workers: int, result: TestResult):
         if final.get('error'):
             result.fail('渲染完成', final['error'][:200])
         else:
-            result.ok('渲染完成', f'duration≈{time.time():.0f}s')
+            result.ok('渲染完成', f'duration≈{time.monotonic() - render_started_at:.1f}s')
             video_url = final.get('video', '')
             if video_url:
                 result.ok('获得视频路径', video_url)
@@ -638,80 +789,104 @@ def run_tests(base_url: str, test_dir: Path, workers: int, result: TestResult):
 
 # ── 主流程 ───────────────────────────────────────────────────
 
-def main():
+def parse_args(argv=None):
     parser = argparse.ArgumentParser(description='narravid WebUI 全功能端到端测试')
     parser.add_argument('--port', type=int, default=5001, help='WebUI 端口 (默认 5001)')
     parser.add_argument('--workers', type=int, default=4, help='渲染线程数 (默认 4)')
-    parser.add_argument('--keep', action='store_true', help='保留测试输出目录')
-    parser.add_argument('--base-url', type=str, default=None, help='已有 WebUI 地址（跳过启动）')
-    args = parser.parse_args()
+    parser.add_argument(
+        '--keep',
+        action='store_true',
+        help='在 test_output/ 下保留本次运行的唯一输出目录',
+    )
+    parser.add_argument(
+        '--base-url',
+        type=str,
+        default=None,
+        help='已有 WebUI 地址（会修改其数据；需要显式破坏性操作确认）',
+    )
+    parser.add_argument(
+        '--allow-destructive-existing-server',
+        action='store_true',
+        help='允许测试修改已有服务：上传、渲染、模板变更、导入和清理旧任务',
+    )
+    args = parser.parse_args(argv)
+    if args.base_url and not args.allow_destructive_existing_server:
+        parser.error(
+            '--base-url 会修改目标服务并调用 /api/clean；'
+            '确认目标可被测试后添加 --allow-destructive-existing-server'
+        )
+    return args
 
+
+def run_e2e(args, test_dir: Path) -> int:
+    """Run the suite once and always tear down an owned server process tree."""
     base_url = args.base_url or f'http://127.0.0.1:{args.port}'
-    test_dir = Path(__file__).resolve().parent / 'test_output'
     result = TestResult()
 
     print('=' * 60)
     print('narravid WebUI 全功能端到端测试')
     print('=' * 60)
 
-    # ── 启动 WebUI 服务 ──
     proc = None
-    if not args.base_url:
-        print(f'\n[0] 启动 WebUI (port={args.port}) ...')
-        webui_script = Path(__file__).resolve().parent / 'webui.py'
-        proc = subprocess.Popen(
-            [sys.executable, str(webui_script), '--port', str(args.port)],
-            stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-        )
-        if wait_for_server(base_url):
-            result.ok('WebUI 服务启动', f'port={args.port}')
-        else:
-            result.fail('WebUI 服务启动', '超时')
-            if proc:
-                proc.kill()
-            result.summary()
-            sys.exit(1)
-    else:
-        print(f'\n[0] 使用已有服务: {base_url}')
-        if wait_for_server(base_url):
-            result.ok('已有服务可达')
-        else:
-            result.fail('已有服务不可达')
-            result.summary()
-            sys.exit(1)
-
-    # ── 运行测试 ──
-    start_time = time.time()
+    log_path = None
+    started = False
+    interrupted = False
+    start_time = time.monotonic()
     try:
-        run_tests(base_url, test_dir, args.workers, result)
+        if not args.base_url:
+            print(f'\n[0] 启动 WebUI (port={args.port}) ...')
+            if not local_port_available(args.port):
+                result.fail('WebUI 服务启动', f'端口 {args.port} 已被占用')
+            else:
+                proc, log_path = start_webui_server(args.port, test_dir)
+                if wait_for_server(base_url):
+                    result.ok('WebUI 服务启动', f'port={args.port}')
+                    started = True
+                else:
+                    result.fail('WebUI 服务启动', '超时')
+        else:
+            print(f'\n[0] 使用已有服务: {base_url}')
+            if wait_for_server(base_url):
+                result.ok('已有服务可达')
+                started = True
+            else:
+                result.fail('已有服务不可达')
+
+        if started:
+            run_tests(base_url, test_dir, args.workers, result)
     except KeyboardInterrupt:
         print('\n\n测试被中断')
+        interrupted = True
     except Exception as e:
         print(f'\n\n测试异常: {e}')
         import traceback
         traceback.print_exc()
+        result.fail('测试套件异常', str(e))
     finally:
-        elapsed = time.time() - start_time
-        # 关闭 WebUI
-        if proc:
-            proc.terminate()
-            try:
-                proc.wait(timeout=5)
-            except Exception:
-                proc.kill()
+        terminate_process_tree(proc)
 
-    # ── 结果汇总 ──
+    elapsed = time.monotonic() - start_time
     print(f'\n总耗时: {elapsed:.1f}s')
+    if not started and log_path:
+        log_tail = read_log_tail(log_path)
+        if log_tail:
+            print(f'\nWebUI 启动日志末尾:\n{log_tail}')
     success = result.summary()
+    if interrupted:
+        return 130
+    return 0 if success and started else 1
 
-    if not args.keep and test_dir.exists():
-        shutil.rmtree(test_dir, ignore_errors=True)
-        print('\n测试输出已清理 (用 --keep 保留)')
-    else:
-        print(f'\n测试输出保留在: {test_dir}')
 
-    sys.exit(0 if success else 1)
+def main(argv=None):
+    args = parse_args(argv)
+    with e2e_workspace(args.keep) as test_dir:
+        exit_code = run_e2e(args, test_dir)
+        if args.keep:
+            print(f'\n测试输出保留在: {test_dir}')
+    if not args.keep:
+        print('\n本次临时测试输出已清理 (用 --keep 保留)')
+    return exit_code
 
 
 if __name__ == '__main__':
-    main()
+    sys.exit(main())

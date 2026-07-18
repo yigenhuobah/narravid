@@ -7,6 +7,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed — 长期稳定性与安全审计
+
+- **WebUI 写接口**：所有 POST/PUT 请求（含空 body 的 cancel/clean）必须使用 JSON Content-Type，阻断浏览器跨站简单请求
+- **渲染任务生命周期**：render ID 内存/磁盘原子预留，队列上限 8；runner/monitor 真实退出前持续占用容量，线程构造/启动异常会终态化
+- **任务清理竞态**：clean API 保护 JOBS 与尚未发布的 reservation；完成任务仅在 runner/monitor 退出并保留 5 分钟后回收
+- **工程导入/导出**：导入目录用完整 UUID 原子创建；ZIP 导出改为 8MB 内存阈值的 spooled file + 分块响应，避免大工程双份内存峰值
+- **HTTP 响应**：文件名净化、1MiB 分块发送、HEAD/Content-Length/nosniff 一致；补齐 WebP/BMP/AVI/FLV MIME
+- **JSON 数值**：请求、模板、ZIP manifest 与 CLI manifest 拒绝 NaN/Infinity/指数溢出；响应禁止输出非标准 JSON 数值
+- **媒体白名单**：场景/BGM 按角色校验扩展名；BGM 列表覆盖 AAC/M4A/FLAC/OGG
+- **ffmpeg/ffprobe**：环境覆盖与 PATH 结果统一为绝对文件路径；视频流探测纳入可取消子进程注册表
+- **音频/字幕**：拒绝非有限/非正 atempo，修复含单引号路径的真实 ffmpeg 字幕滤镜转义
+- **取消进程树**：Windows taskkill 失败时回退 terminate/kill；WebUI 恢复调用方原有进度环境变量
+- **时长边界**：hold、标题/片尾时长拒绝溢出并限制为 1..3600 秒
+
+### Tests — 深度覆盖扩展
+
+- **CI 分支覆盖率**：引入 `coverage.py` branch coverage；Linux 与 Windows 发布门禁一次运行全部非 legacy 测试层，项目阈值 75%（本机完整套件实测 79%）
+- **Windows 发布门禁**：tag 构建前执行 Ruff、测试与覆盖率；直接构建依赖锁定于 `requirements-build.txt`，动态定位 Chocolatey 真实 ffmpeg 二进制，禁用环境相关 UPX，并验证冻结 EXE health
+- **发布校验文件**：Release 同步生成 `SHA256SUMS.txt`；本地干净 venv 已验证 CLI/WebUI one-file 构建与冻结 WebUI 全量 E2E 37/37
+- **E2E harness**：默认临时工作区、保留模式使用唯一目录、既有服务需要破坏性操作显式确认、服务进程树可靠清理，并修正渲染耗时统计
+
+- stdlib unittest 从约 95 个 fast 用例扩展到 200+，覆盖 unit/security/cancel/live/platform/pipeline
+- 安全层覆盖请求体读前拒绝、严格 base64、ZIP 路径/条目/500MB、UUID 碰撞、reservation-clean 交错与响应头
+- 并发层覆盖同 ID 提交、队列边界/预留容量、取消后 runner 占位、线程构造/两阶段启动失败与 prune 生命周期
+- 真实 ffmpeg 层覆盖图片/视频背景、BGM、hold、标题/片尾、含引号字幕路径，并用 RGB 帧差确认字幕和卡片确实可见
+- 测试数据根按进程隔离到临时目录，避免并行测试共享真实 rendered 目录；legacy 脚本同步适配
+
 ## [v1.10.4] - 2026-07-14
 
 ### Fixed — 深度扫描 critical / high

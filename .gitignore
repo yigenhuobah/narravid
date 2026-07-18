@@ -21,6 +21,14 @@ stderr.log
 # python
 __pycache__/
 *.pyc
+.coverage
+coverage.xml
+htmlcov/
+
+# local PyInstaller output
+build/
+dist/
+*.spec
 
 # test/debug scripts
 _remove_emoji.py

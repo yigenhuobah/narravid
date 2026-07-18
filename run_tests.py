@@ -22,8 +22,10 @@ Exit code 0 only if all selected layers pass.
 from __future__ import annotations
 
 import argparse
+import os
 import subprocess
 import sys
+import tempfile
 import time
 import unittest
 from pathlib import Path
@@ -42,6 +44,16 @@ LAYERS = {
 DEFAULT = ['unit', 'security', 'cancel', 'live']
 FAST = ['unit', 'security', 'cancel']
 MAX = ['unit', 'security', 'cancel', 'live', 'pipeline', 'legacy']
+
+_RUNNER_DATA_DIR = None
+
+
+def isolate_test_data_root():
+    global _RUNNER_DATA_DIR
+    if _RUNNER_DATA_DIR is None:
+        _RUNNER_DATA_DIR = tempfile.TemporaryDirectory(prefix='narravid-runner-')
+        os.environ['NARRAVID_DATA_DIR'] = _RUNNER_DATA_DIR.name
+
 
 
 def run_unittest_modules(modules: list[str], verbosity: int = 2) -> unittest.TestResult:
@@ -95,6 +107,8 @@ def main(argv=None):
         print('  legacy     test_regressions.py + _verify_fix.py')
         print('presets: default=', DEFAULT, 'fast=', FAST, 'max=', MAX)
         return 0
+
+    isolate_test_data_root()
 
     if args.max:
         selected = list(MAX)

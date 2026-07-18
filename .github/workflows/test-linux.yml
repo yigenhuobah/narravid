@@ -30,11 +30,8 @@ jobs:
       - name: Ruff lint
         run: ruff check .
 
-      - name: Run fast tests
-        run: python run_tests.py --fast
-
-      - name: Run default suite (incl. live)
-        run: python run_tests.py
-
-      - name: Pipeline smoke (ffmpeg)
-        run: python run_tests.py --layer pipeline
+      - name: Run tests with branch coverage
+        run: |
+          python -m coverage erase
+          python -m coverage run run_tests.py --layer unit,security,cancel,live,pipeline
+          python -m coverage report

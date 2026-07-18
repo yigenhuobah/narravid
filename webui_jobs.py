@@ -5,6 +5,7 @@ import os
 import re
 import sys
 import threading
+import time
 from pathlib import Path
 
 
@@ -59,17 +60,21 @@ MAX_VIDEO_SIZE = 60 * 1024 * 1024
 MAX_BGM_SIZE = 50 * 1024 * 1024
 MAX_UPLOAD_SIZE = 60 * 1024 * 1024
 MAX_TEMPLATE_BODY = 1 * 1024 * 1024  # PUT/POST template JSON
+MAX_PENDING_JOBS = 8
+JOB_RETENTION_SECONDS = 300
 # Progress stall: monitor sleeps 2s; 150 ticks ≈ 300s without progress change
 STALL_TICKS = 150
 STALL_SECONDS = STALL_TICKS * 2
-MEDIA_FILE_EXTS = {
-    '.png', '.jpg', '.jpeg', '.gif', '.webp', '.bmp',
-    '.mp4', '.mov', '.mkv', '.avi', '.webm', '.flv',
-    '.mp3', '.wav', '.aac', '.m4a', '.flac', '.ogg',
-}
+IMAGE_FILE_EXTS = {'.png', '.jpg', '.jpeg', '.gif', '.webp', '.bmp'}
+VIDEO_FILE_EXTS = {'.mp4', '.mov', '.mkv', '.avi', '.webm', '.flv'}
+AUDIO_FILE_EXTS = {'.mp3', '.wav', '.aac', '.m4a', '.flac', '.ogg'}
+SCENE_FILE_EXTS = IMAGE_FILE_EXTS | VIDEO_FILE_EXTS
+MEDIA_FILE_EXTS = SCENE_FILE_EXTS | AUDIO_FILE_EXTS
 INTERNAL_NAME_BLOCKLIST = {'_stderr.log', '_progress.txt', '_warnings.txt', '_title_card.txt', '_end_card.txt'}
 
 JOBS = {}
+_RENDER_ID_LOCK = threading.Lock()
+_RESERVED_RENDER_IDS: set[str] = set()
 RENDER_LOCK = threading.Lock()  # 全局渲染锁：同时只允许一个渲染任务执行
 ACTIVE_RENDER_ID = None  # 当前持有 RENDER_LOCK 并执行 main() 的 job id
 _ACTIVE_RENDER_LOCK = threading.Lock()
@@ -81,6 +86,45 @@ MEDIA_ALLOWED_DIRS = [
 ]
 
 
+class RenderQueueFullError(RuntimeError):
+    pass
+
+
+def _reserve_render_id(rid: str) -> bool:
+    """Atomically reserve a render id until its JOBS entry is installed."""
+    with _RENDER_ID_LOCK:
+        if rid in JOBS or rid in _RESERVED_RENDER_IDS:
+            return False
+        pending = sum(
+            job.get('_runner_active', not job.get('done')) for job in JOBS.values()
+        )
+        if pending + len(_RESERVED_RENDER_IDS) >= MAX_PENDING_JOBS:
+            raise RenderQueueFullError('render queue is full')
+        _RESERVED_RENDER_IDS.add(rid)
+        return True
+
+
+def _install_reserved_job(rid: str, job: dict):
+    """Atomically publish a reserved job and consume its reservation."""
+    with _RENDER_ID_LOCK:
+        if rid not in _RESERVED_RENDER_IDS or rid in JOBS:
+            raise RuntimeError(f'render id is not exclusively reserved: {rid}')
+        JOBS[rid] = job
+        _RESERVED_RENDER_IDS.remove(rid)
+
+
+def _release_render_id(rid: str | None):
+    if not rid:
+        return
+    with _RENDER_ID_LOCK:
+        _RESERVED_RENDER_IDS.discard(rid)
+
+
+def _protected_render_ids() -> set[str]:
+    with _RENDER_ID_LOCK:
+        return set(JOBS) | _RESERVED_RENDER_IDS
+
+
 def _set_active_render(rid):
     global ACTIVE_RENDER_ID
     with _ACTIVE_RENDER_LOCK:
@@ -90,6 +134,24 @@ def _set_active_render(rid):
 def _get_active_render():
     with _ACTIVE_RENDER_LOCK:
         return ACTIVE_RENDER_ID
+
+
+def _prune_finished_jobs(now: float | None = None):
+    """Drop terminal jobs after the status-retention window without timer threads."""
+    current = time.monotonic() if now is None else now
+    active = _get_active_render()
+    with _RENDER_ID_LOCK:
+        for rid, job in list(JOBS.items()):
+            if (
+                not job.get('done')
+                or rid == active
+                or job.get('_runner_active')
+                or job.get('_monitor_active')
+            ):
+                continue
+            done_at = job.setdefault('_done_at', current)
+            if current - done_at >= JOB_RETENTION_SECONDS:
+                JOBS.pop(rid, None)
 
 
 def _is_under(path: Path, root: Path) -> bool:

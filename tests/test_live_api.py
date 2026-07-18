@@ -9,6 +9,7 @@ import base64
 import io
 import json
 import shutil
+import threading
 import time
 import unittest
 import zipfile
@@ -28,6 +29,18 @@ from tests.support import (
     write_tiny_png,
     write_tone_wav,
 )
+
+
+def wait_job_threads(rid: str, timeout: float = 5.0) -> bool:
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        job = webui.JOBS.get(rid)
+        if not job or not (
+            job.get('_runner_active') or job.get('_monitor_active')
+        ):
+            return True
+        time.sleep(0.01)
+    return False
 
 
 class TestLiveBasicApi(unittest.TestCase):
@@ -106,35 +119,54 @@ class TestLiveBasicApi(unittest.TestCase):
             self.assertEqual(code, 400)
 
     def test_render_id_escape_rewritten_live(self):
-        """Live server: bad render_id is rewritten; cancel immediately."""
+        """Live server rewrites bad IDs and cancels a controlled active render."""
         with live_webui() as base:
             raw = write_tiny_png(Path('_tmp_r.png')).read_bytes()
             Path('_tmp_r.png').unlink(missing_ok=True)
             code, up = upload_bytes(base, 'r.png', raw)
             self.assertEqual(code, 200)
             path = up['path']
-            code, data = http_json('POST', base + '/api/render', {
-                'render_id': '../escape_live',
-                'manifest': {
-                    'scenes': [{'image': path, 'text': '', 'hold_sec': 0.3}],
-                    'workers': 1,
-                    'burn_subtitles': False,
-                },
-            })
-            self.assertEqual(code, 200)
-            rid = data['render_id']
-            self.assertNotIn('..', rid)
-            self.assertIsNotNone(webui._sanitize_render_id(rid))
-            http_json('POST', base + f'/api/cancel/{rid}')
-            for _ in range(20):
-                c, st = http_json('GET', base + f'/api/status/{rid}')
-                if c == 404 or (isinstance(st, dict) and st.get('done')):
-                    break
-                time.sleep(0.2)
-            out = webui._job_out_dir(rid)
-            if out and out.exists():
-                shutil.rmtree(out, ignore_errors=True)
-            Path(path).unlink(missing_ok=True)
+            started = threading.Event()
+            finished = threading.Event()
+            fake = fake_video_auto_main(delay_sec=2.0, write_srt=False)
+
+            def controlled_main(argv=None):
+                started.set()
+                try:
+                    return fake(argv)
+                finally:
+                    finished.set()
+
+            rid = None
+            try:
+                with mock.patch('video_auto.main', controlled_main):
+                    code, data = http_json('POST', base + '/api/render', {
+                        'render_id': '../escape_live',
+                        'manifest': {
+                            'scenes': [{'image': path, 'text': '', 'hold_sec': 0.3}],
+                            'workers': 1,
+                            'burn_subtitles': False,
+                        },
+                    })
+                    self.assertEqual(code, 200)
+                    rid = data['render_id']
+                    self.assertNotIn('..', rid)
+                    self.assertIsNotNone(webui._sanitize_render_id(rid))
+                    self.assertTrue(started.wait(5), 'render thread did not enter video_auto.main')
+                    cancel_code, _ = http_json('POST', base + f'/api/cancel/{rid}')
+                    self.assertEqual(cancel_code, 200)
+                    status_code, status = poll_status(base, rid, timeout=10)
+                    self.assertEqual(status_code, 200)
+                    self.assertTrue(status.get('cancelled'))
+                    self.assertTrue(finished.wait(5), 'render thread did not exit after cancel')
+                    self.assertTrue(wait_job_threads(rid), 'job lifecycle threads did not exit')
+            finally:
+                if rid:
+                    job = webui.JOBS.pop(rid, None)
+                    out = job.get('out') if isinstance(job, dict) else webui._job_out_dir(rid)
+                    if out:
+                        shutil.rmtree(out, ignore_errors=True)
+                Path(path).unlink(missing_ok=True)
 
     def test_templates_crud_with_bgm_fields(self):
         with live_webui() as base:
@@ -265,8 +297,18 @@ class TestLiveRenderOpsMocked(unittest.TestCase):
         with live_webui() as base:
             path = self._upload_png(base)
             fake = fake_video_auto_main(delay_sec=2.0, write_srt=False)
+            started = threading.Event()
+            finished = threading.Event()
+
+            def controlled_main(argv=None):
+                started.set()
+                try:
+                    return fake(argv)
+                finally:
+                    finished.set()
+
             try:
-                with mock.patch('video_auto.main', fake):
+                with mock.patch('video_auto.main', controlled_main):
                     code, data = http_json('POST', base + '/api/render', {
                         'render_id': 'livecancelmid',
                         'manifest': {
@@ -277,23 +319,15 @@ class TestLiveRenderOpsMocked(unittest.TestCase):
                     })
                     self.assertEqual(code, 200)
                     rid = data['render_id']
-                    time.sleep(0.15)
-                    c, d = http_json('POST', base + f'/api/cancel/{rid}')
+                    self.assertTrue(started.wait(5), 'render thread did not enter video_auto.main')
+                    c, _ = http_json('POST', base + f'/api/cancel/{rid}')
                     self.assertEqual(c, 200)
                     sc, st = poll_status(base, rid, timeout=20)
                     self.assertEqual(sc, 200)
-                    # Must be a real cancel/abort terminal — not success with video
-                    cancelled = bool(st.get('cancelled')) or (
-                        '取消' in str(st.get('error') or '') or '取消' in str(st.get('progress') or '')
-                    )
-                    self.assertTrue(
-                        cancelled,
-                        msg=f'expected cancel terminal, got {st}',
-                    )
-                    self.assertFalse(
-                        st.get('video') and not st.get('error') and not st.get('cancelled'),
-                        msg=f'cancel must not look like clean success: {st}',
-                    )
+                    self.assertTrue(st.get('cancelled'), msg=f'expected cancel terminal, got {st}')
+                    self.assertFalse(st.get('video'), msg=f'cancel must not expose video: {st}')
+                    self.assertTrue(finished.wait(5), 'render thread did not exit after cancel')
+                    self.assertTrue(wait_job_threads(rid), 'job lifecycle threads did not exit')
             finally:
                 self._cleanup_job('livecancelmid', path)
 
@@ -451,9 +485,10 @@ class TestLiveRenderOpsMocked(unittest.TestCase):
                 # cleanup project dir
                 p0 = Path(imp['manifest']['scenes'][0]['image'])
                 proj = p0
-                while proj.parent != webui.UPLOAD_DIR and proj != proj.parent:
-                    if proj.name.startswith('project_'):
-                        shutil.rmtree(proj, ignore_errors=True)
+                while proj != proj.parent:
+                    if proj.parent == webui.UPLOAD_DIR:
+                        if proj.name.startswith('project_'):
+                            shutil.rmtree(proj, ignore_errors=True)
                         break
                     proj = proj.parent
             finally:

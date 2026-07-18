@@ -19,6 +19,17 @@ python run_tests.py --layer unit,security
 python run_tests.py --list
 ```
 
+CI measures branch coverage across every non-legacy layer and enforces the 75% project gate:
+
+```bash
+python -m coverage erase
+python -m coverage run run_tests.py --layer unit,security,cancel,live,pipeline
+python -m coverage report
+```
+
+Test modules set `NARRAVID_DATA_DIR` to a per-process temporary directory before
+importing WebUI code, so parallel runs never share the real `rendered/webui` tree.
+
 ## Layers
 
 | Layer | Module(s) | Needs | Purpose |
@@ -27,7 +38,7 @@ python run_tests.py --list
 | `security` | `test_security_http` | nothing | `/rendered`, upload, render_id, export/import, zip slip, late-cancel, srt backfill |
 | `cancel` | `test_cancel_concurrency` | nothing | fail-fast labeling, kill-on-cancel, active render, frontend UX markers |
 | `live` | `test_live_api` | free port | real `ThreadingHTTPServer` ops (render mocked; no Edge TTS) |
-| `pipeline` | `test_pipeline_ffmpeg` | ffmpeg | `process_audio`, hold-only CLI smoke |
+| `pipeline` | `test_pipeline_ffmpeg` | ffmpeg | real render branches, audio timing, BGM, subtitle/card RGB frame checks |
 | `legacy` | `test_regressions.py`, `_verify_fix.py` | — | older ad-hoc checks kept for continuity |
 
 ### What `live` covers (mocked render)
@@ -48,7 +59,13 @@ Still use the existing heavy script (Edge TTS + real render):
 ```bash
 python test_e2e.py
 python test_e2e.py --port 5001 --workers 2 --keep
+python test_e2e.py --base-url http://127.0.0.1:5000 --allow-destructive-existing-server
 ```
+
+The default run uses a temporary workspace. `--keep` creates a unique child under
+`test_output/` and never deletes earlier runs. Existing-server mode uploads media,
+changes templates, imports projects, and calls `/api/clean`, so it requires the
+explicit destructive opt-in shown above and must not target a shared instance.
 
 `test_e2e.py` also covers templates, export/import, late-cancel, clean (in addition to full TTS render).
 
@@ -88,6 +105,7 @@ test_e2e.py               # full WebUI e2e
 | Every edit | `python run_tests.py --fast` |
 | Before push | `python run_tests.py` |
 | Before release / tag | `python run_tests.py --max` then `python test_e2e.py` |
+| CI / release workflow | all unique layers under branch coverage, then frozen EXE smoke |
 
 ## Platform notes
 
@@ -98,7 +116,8 @@ test_e2e.py               # full WebUI e2e
 | `test_e2e.py` | Edge + ffmpeg | Edge + ffmpeg; **do not** use `--engine system` |
 | System TTS | PowerShell | unsupported by design |
 
-Linux CI: `.github/workflows/test-linux.yml` installs `ffmpeg` + `fonts-noto-cjk` and runs `run_tests.py`.
+Linux CI installs `ffmpeg` + `fonts-noto-cjk`, runs all unique test layers once, and
+fails below 75% branch coverage. The Windows release workflow repeats that gate before building.
 
 ## Project docs
 

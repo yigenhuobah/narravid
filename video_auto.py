@@ -19,6 +19,7 @@ narravid — 图片 + JSON 文案 → 解说视频，一键自动生成。
 """
 import argparse
 import json
+import math
 import os
 import re
 import shutil
@@ -49,6 +50,7 @@ DEFAULT_EDGE_VOICE = 'zh-CN-XiaoxiaoNeural'
 DEFAULT_SPEECH_SPEED = 1.5
 MAX_TTS_RETRIES = 2
 DEFAULT_WORKERS = 4
+MAX_DURATION_SECONDS = 3600.0
 
 # ── helpers ──────────────────────────────────────────────────────
 
@@ -68,11 +70,22 @@ def _kill_process(proc: subprocess.Popen):
     try:
         if os.name == 'nt':
             # /T kills the whole tree (ffmpeg often spawns helpers)
-            subprocess.run(
+            result = subprocess.run(
                 ['taskkill', '/F', '/T', '/PID', str(proc.pid)],
                 stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
                 timeout=10,
             )
+            if result.returncode == 0 or proc.poll() is not None:
+                return
+            try:
+                proc.terminate()
+                proc.wait(timeout=2)
+                return
+            except Exception:
+                try:
+                    proc.kill()
+                except Exception:
+                    pass
         else:
             pid = proc.pid
             try:
@@ -124,7 +137,7 @@ def run(cmd, silent=False):
     with _ACTIVE_PROCS_LOCK:
         _ACTIVE_PROCS.append(proc)
     try:
-        deadline = time.time() + 600
+        deadline = time.monotonic() + 600
         while True:
             try:
                 ret = proc.wait(timeout=0.4)
@@ -138,7 +151,7 @@ def run(cmd, silent=False):
                         pass
                     _check_cancel()  # raise user/abort error
                     raise RuntimeError('渲染已中止')
-                if time.time() >= deadline:
+                if time.monotonic() >= deadline:
                     _kill_process(proc)
                     raise subprocess.TimeoutExpired(cmd, 600)
         if ret != 0:
@@ -151,18 +164,15 @@ def run(cmd, silent=False):
                 pass
 
 
-def ffprobe_duration(path: Path) -> float:
-    """Probe media duration; registered so CancelToken can kill a hung probe."""
+def run_capture_text(cmd, timeout=60) -> str:
+    """Run a text-output subprocess with timeout and cooperative cancellation."""
     _check_cancel()
-    cmd = [
-        FFPROBE, '-v', 'error', '-show_entries', 'format=duration',
-        '-of', 'default=noprint_wrappers=1:nokey=1', str(path),
-    ]
     kwargs = {
         'stdout': subprocess.PIPE,
         'stderr': subprocess.DEVNULL,
         'text': True,
         'encoding': 'utf-8',
+        'errors': 'replace',
     }
     if os.name != 'nt':
         kwargs['start_new_session'] = True
@@ -170,7 +180,7 @@ def ffprobe_duration(path: Path) -> float:
     with _ACTIVE_PROCS_LOCK:
         _ACTIVE_PROCS.append(proc)
     try:
-        deadline = time.time() + 60
+        deadline = time.monotonic() + timeout
         while True:
             try:
                 out, _ = proc.communicate(timeout=0.4)
@@ -184,12 +194,12 @@ def ffprobe_duration(path: Path) -> float:
                         pass
                     _check_cancel()
                     raise RuntimeError('渲染已中止')
-                if time.time() >= deadline:
+                if time.monotonic() >= deadline:
                     _kill_process(proc)
-                    raise subprocess.TimeoutExpired(cmd, 60)
+                    raise subprocess.TimeoutExpired(cmd, timeout)
         if proc.returncode != 0:
             raise subprocess.CalledProcessError(proc.returncode, cmd)
-        return float((out or '').strip())
+        return out or ''
     finally:
         with _ACTIVE_PROCS_LOCK:
             try:
@@ -198,12 +208,23 @@ def ffprobe_duration(path: Path) -> float:
                 pass
 
 
+def ffprobe_duration(path: Path) -> float:
+    """Probe media duration; registered so CancelToken can kill a hung probe."""
+    cmd = [
+        FFPROBE, '-v', 'error', '-show_entries', 'format=duration',
+        '-of', 'default=noprint_wrappers=1:nokey=1', str(path),
+    ]
+    return float(run_capture_text(cmd, timeout=60).strip())
+
+
 def atempo_filter_chain(speed: float) -> list:
     """Build one or more atempo filters. ffmpeg allows only 0.5–2.0 per filter."""
-    if abs(speed - 1.0) <= 1e-6:
+    s = float(speed)
+    if not math.isfinite(s) or s <= 0:
+        raise ValueError('speech speed must be a finite positive number')
+    if abs(s - 1.0) <= 1e-6:
         return []
     filters = []
-    s = float(speed)
     # Speed up: peel off 2.0 factors
     while s > 2.0 + 1e-9:
         filters.append('atempo=2.000')
@@ -328,24 +349,15 @@ def sanitize_subtitle_style(style: str | None) -> str:
 
 
 def subtitle_filter_arg(srt_path: Path, style_override: str = None) -> str:
-    # ffmpeg subtitles filter 路径转义规则：
-    #   路径用单引号包裹，内部特殊字符用 \ 转义：: \ ' [ ]
-    #   但单引号在单引号字符串内无法用 \ 转义，
-    #   所以路径含单引号时改用 filename 选项避免问题
+    # libavfilter uses single quotes for option values. A literal apostrophe
+    # must close the quote, be escaped at all filter-parser levels, then reopen.
     path = str(srt_path.resolve()).replace('\\', '/')
-    has_apostrophe = "'" in path
+    for ch in [':', '[', ']']:
+        path = path.replace(ch, '\\' + ch)
+    apostrophe_escape = "'" + ("\\" * 3) + "''"
+    path = path.replace("'", apostrophe_escape)
     style = sanitize_subtitle_style(style_override)
-    if has_apostrophe:
-        # 含单引号的路径：使用 filename= 选项，用双引号包裹
-        # 双引号内需要转义：\ : "
-        for ch in ['\\', ':', '"']:
-            path = path.replace(ch, '\\' + ch)
-        return f'subtitles=filename="{path}":force_style=\'{style}\''
-    else:
-        # 常规路径：单引号包裹，转义 : [ ]
-        for ch in [':', '[', ']']:
-            path = path.replace(ch, '\\' + ch)
-        return f"subtitles='{path}':force_style='{style}'"
+    return f"subtitles=filename='{path}':force_style='{style}'"
 
 
 def edge_tts_available() -> bool:
@@ -433,11 +445,11 @@ def scene_hold_sec(scene: dict) -> float:
             return None
         try:
             n = float(raw)
-        except (TypeError, ValueError):
+        except (OverflowError, TypeError, ValueError):
             return None
         if n != n or n in (float('inf'), float('-inf')):  # NaN/inf
             return None
-        return max(0.0, min(n, 3600.0))  # clamp to 1h
+        return max(0.0, min(n, MAX_DURATION_SECONDS))  # clamp to 1h
 
     if 'hold_sec' in scene:
         parsed = _parse(scene.get('hold_sec'))
@@ -481,8 +493,23 @@ def normalize_manifest(data: dict) -> dict:
     return out
 
 
+def _reject_json_constant(value: str):
+    raise ValueError(f'non-finite JSON number: {value}')
+
+
+def _parse_finite_json_float(value: str) -> float:
+    parsed = float(value)
+    if not math.isfinite(parsed):
+        raise ValueError(f'non-finite JSON number: {value}')
+    return parsed
+
+
 def load_manifest(path: Path) -> dict:
-    data = json.loads(path.read_text(encoding='utf-8-sig'))
+    data = json.loads(
+        path.read_text(encoding='utf-8-sig'),
+        parse_constant=_reject_json_constant,
+        parse_float=_parse_finite_json_float,
+    )
     return normalize_manifest(data)
 
 # ── TTS ──────────────────────────────────────────────────────────
@@ -978,21 +1005,24 @@ def parse_boolish(val, default=True):
 
 
 def resolve_positive_duration(val, fallback: float, name: str = 'duration') -> float:
-    """解析时长；缺失/无效/≤0 时回退到 fallback（至少 1.0）。
-
-    语义：0 / 负数 = “未单独指定”，使用 fallback（如 end_card 跟标题页同长）。
-    这与「max(1.0, val) 把 0 夹成 1 秒」不同，是刻意的同长回退。
-    """
-    if val is None:
-        return max(1.0, float(fallback))
+    """Resolve a finite 1..3600 second duration, falling back when invalid."""
     try:
-        f = float(val)
-    except (ValueError, TypeError):
-        print(f'  [warn] 字段 {name} 值无效 ({val!r})，使用默认值 {fallback}')
-        return max(1.0, float(fallback))
-    if f <= 0:
-        return max(1.0, float(fallback))
-    return max(1.0, f)
+        fallback_value = float(fallback)
+    except (OverflowError, TypeError, ValueError):
+        fallback_value = 1.0
+    if not math.isfinite(fallback_value):
+        fallback_value = 1.0
+    fallback_value = max(1.0, min(fallback_value, MAX_DURATION_SECONDS))
+    if val is None:
+        return fallback_value
+    try:
+        parsed = float(val)
+    except (OverflowError, TypeError, ValueError):
+        print(f'  [warn] 字段 {name} 值无效 ({val!r})，使用默认值 {fallback_value}')
+        return fallback_value
+    if not math.isfinite(parsed) or parsed <= 0:
+        return fallback_value
+    return max(1.0, min(parsed, MAX_DURATION_SECONDS))
 
 
 def is_cancel_error(err) -> bool:
@@ -1100,10 +1130,10 @@ def process_single_scene(idx: int, scene: dict, project_root: Path,
         # 视频背景：丢弃视频原始音轨，用 TTS 音频；-t 控制总时长（已含 hold）
         # 先确认有视频流，避免 -map 0:v:0 晦涩失败
         try:
-            vprobe = subprocess.check_output([
+            vprobe = run_capture_text([
                 FFPROBE, '-v', 'error', '-select_streams', 'v:0',
-                '-show_entries', 'stream=codec_type', '-of', 'csv=p=0', str(image)
-            ], timeout=60, text=True, encoding='utf-8', errors='replace').strip()
+                '-show_entries', 'stream=codec_type', '-of', 'csv=p=0', str(image),
+            ], timeout=60).strip()
             if not vprobe:
                 raise RuntimeError(f'scene {idx} 媒体无视频流: {image.name}')
         except subprocess.CalledProcessError as e:
@@ -1177,13 +1207,16 @@ def main(argv=None):
     def _safe_int(val, default, name):
         try:
             return int(val)
-        except (ValueError, TypeError):
+        except (OverflowError, TypeError, ValueError):
             print(f'  [warn] manifest 字段 {name} 值无效 ({val!r})，使用默认值 {default}')
             return default
     def _safe_float(val, default, name):
         try:
-            return float(val)
-        except (ValueError, TypeError):
+            parsed = float(val)
+            if not math.isfinite(parsed):
+                raise ValueError('non-finite value')
+            return parsed
+        except (OverflowError, TypeError, ValueError):
             print(f'  [warn] manifest 字段 {name} 值无效 ({val!r})，使用默认值 {default}')
             return default
 
@@ -1205,6 +1238,9 @@ def main(argv=None):
             DEFAULT_SPEECH_SPEED,
             'speech_speed',
         )
+    if not math.isfinite(speech_speed):
+        print(f'  [warn] invalid speech speed {speech_speed!r}, using {DEFAULT_SPEECH_SPEED}')
+        speech_speed = DEFAULT_SPEECH_SPEED
     if speech_speed < 0.5:
         print(f'  [warn] 语速 {speech_speed} 过低，已调整为 0.5')
         speech_speed = 0.5
@@ -1252,10 +1288,10 @@ def main(argv=None):
     if not end_card_text:
         end_card_text = args.end_card or manifest.get('end_card')
     if args.card_duration is not None:
-        card_duration = max(1.0, args.card_duration)
+        card_duration = resolve_positive_duration(args.card_duration, 1.0, 'card_duration')
     else:
-        card_duration = max(1.0, _safe_float(
-            manifest.get('card_duration', 3.0), 3.0, 'card_duration'))
+        card_duration = min(MAX_DURATION_SECONDS, max(1.0, _safe_float(
+            manifest.get('card_duration', 3.0), 3.0, 'card_duration')))
     if args.end_card_duration is not None:
         # 0 / 负数：与旧版一致，表示“与标题页时长相同”
         end_card_duration = resolve_positive_duration(args.end_card_duration, card_duration, 'end_card_duration')

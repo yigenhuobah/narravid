@@ -8,6 +8,7 @@ from __future__ import annotations
 import base64
 import io
 import json
+import shutil
 import sys
 import tempfile
 import threading
@@ -188,6 +189,8 @@ def _make_handler(path: str, method: str = 'GET', body: bytes = b'', headers=Non
     h.path = path
     h.request_version = 'HTTP/1.1'
     h.headers = headers or {'Content-Length': str(len(body))}
+    if headers is None and method in {'POST', 'PUT'}:
+        h.headers['Content-Type'] = 'application/json'
     h.rfile = io.BytesIO(body)
     h.wfile = io.BytesIO()
     h.close_connection = True
@@ -234,7 +237,7 @@ def test_rendered_path_traversal_http():
     up = webui.UPLOAD_DIR / '_regtest_block_serve.png'
     up.write_bytes(b'\x89PNG\r\n\x1a\n')
     try:
-        rel = up.resolve().relative_to(ROOT.resolve()).as_posix()
+        rel = up.resolve().relative_to(webui.ROOT.resolve()).as_posix()
         h2 = _make_handler('/' + rel)
         webui.H.do_GET(h2)
         code2, data2 = _read_response(h2)
@@ -346,7 +349,8 @@ def test_export_allowlist():
         h = _make_handler('/api/export', method='POST', body=body)
         webui.H.do_POST(h)
         code, data = _read_response(h)
-        C.check('export rejects outside media', code == 400 and '无法导出' in str(data), f'code={code} data={data!r}')
+        rejected_without_host_path = code == 400 and str(outside.parent) not in str(data)
+        C.check('export rejects outside media', rejected_without_host_path, f'code={code} data={data!r}')
 
         body2 = json.dumps({
             'manifest': {'scenes': [{'image': str(inside), 'text': 'b'}]}
@@ -390,9 +394,10 @@ def test_import_path_confinement():
     buf2 = io.BytesIO()
     with zipfile.ZipFile(buf2, 'w') as zf:
         zf.writestr('assets/ok.png', b'\x89PNG')
+        zf.writestr('assets/ok.wav', b'RIFF')
         zf.writestr('manifest.json', json.dumps({
             'scenes': [{'image': 'assets/ok.png', 'text': 'ok'}],
-            'bgm': 'assets/ok.png',
+            'bgm': 'assets/ok.wav',
         }))
     payload2 = json.dumps({'data': base64.b64encode(buf2.getvalue()).decode('ascii')}).encode('utf-8')
     h2 = _make_handler('/api/import', method='POST', body=payload2)
@@ -402,6 +407,13 @@ def test_import_path_confinement():
     if isinstance(data2, dict):
         img = Path(data2['manifest']['scenes'][0]['image'])
         C.check('import image under uploads', webui._is_under(img, webui.UPLOAD_DIR), str(img))
+        project_dir = img
+        while project_dir != project_dir.parent:
+            if project_dir.parent == webui.UPLOAD_DIR:
+                if project_dir.name.startswith('project_'):
+                    shutil.rmtree(project_dir, ignore_errors=True)
+                break
+            project_dir = project_dir.parent
 
 
 def test_import_zip_slip_member():

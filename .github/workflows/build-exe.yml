@@ -12,6 +12,8 @@ permissions:
 jobs:
   build:
     runs-on: windows-latest
+    env:
+      PYINSTALLER_CONFIG_DIR: ${{ runner.temp }}\pyinstaller
     steps:
       - uses: actions/checkout@v4
 
@@ -23,16 +25,58 @@ jobs:
       - name: Install Python deps
         run: |
           python -m pip install --upgrade pip
-          pip install pyinstaller edge-tts matplotlib aiohttp
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          pip install -r requirements-build.txt
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
       - name: Install ffmpeg
-        run: choco install ffmpeg --no-progress -y
+        run: |
+          choco install ffmpeg --no-progress -y
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $packageRoot = Join-Path $env:ChocolateyInstall 'lib\ffmpeg'
+          if (-not (Test-Path $packageRoot -PathType Container)) {
+            throw "Chocolatey ffmpeg package root not found: $packageRoot"
+          }
+          $ffmpeg = Get-ChildItem $packageRoot -Recurse -File -Filter ffmpeg.exe |
+            Where-Object Length -gt 1MB |
+            Sort-Object FullName |
+            Select-Object -First 1 -ExpandProperty FullName
+          $ffprobe = Get-ChildItem $packageRoot -Recurse -File -Filter ffprobe.exe |
+            Where-Object Length -gt 1MB |
+            Sort-Object FullName |
+            Select-Object -First 1 -ExpandProperty FullName
+          if (-not $ffmpeg -or -not $ffprobe) {
+            throw 'Chocolatey ffmpeg package did not contain real ffmpeg/ffprobe binaries'
+          }
+          $ffmpegDir = Split-Path $ffmpeg -Parent
+          $ffprobeDir = Split-Path $ffprobe -Parent
+          if ($ffmpegDir -ne $ffprobeDir) {
+            throw 'Chocolatey ffmpeg and ffprobe were not found in the same directory'
+          }
+          & $ffmpeg -version
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          & $ffprobe -version
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          Add-Content -Path $env:GITHUB_ENV -Value "FFMPEG_PATH=$ffmpeg" -Encoding utf8
+          Add-Content -Path $env:GITHUB_ENV -Value "FFPROBE_PATH=$ffprobe" -Encoding utf8
+
+      - name: Ruff lint
+        run: ruff check .
+
+      - name: Run release tests with branch coverage
+        run: |
+          python -m coverage erase
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          python -m coverage run run_tests.py --layer unit,security,cancel,live,pipeline
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          python -m coverage report
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
       - name: Build CLI exe
         run: >
-          pyinstaller --onefile --name narravid --console
-          --add-binary "C:\ProgramData\chocolatey\lib\ffmpeg\tools\ffmpeg\bin\ffmpeg.exe;ffmpeg"
-          --add-binary "C:\ProgramData\chocolatey\lib\ffmpeg\tools\ffmpeg\bin\ffprobe.exe;ffmpeg"
+          python -m PyInstaller --noconfirm --clean --noupx --onefile --name narravid --console
+          --add-binary "${{ env.FFMPEG_PATH }};ffmpeg"
+          --add-binary "${{ env.FFPROBE_PATH }};ffmpeg"
           --hidden-import edge_tts
           --hidden-import _bundled_ffmpeg
           --collect-all edge_tts
@@ -41,9 +85,9 @@ jobs:
 
       - name: Build WebUI exe
         run: >
-          pyinstaller --onefile --name narravid-webui --console
-          --add-binary "C:\ProgramData\chocolatey\lib\ffmpeg\tools\ffmpeg\bin\ffmpeg.exe;ffmpeg"
-          --add-binary "C:\ProgramData\chocolatey\lib\ffmpeg\tools\ffmpeg\bin\ffprobe.exe;ffmpeg"
+          python -m PyInstaller --noconfirm --clean --noupx --onefile --name narravid-webui --console
+          --add-binary "${{ env.FFMPEG_PATH }};ffmpeg"
+          --add-binary "${{ env.FFPROBE_PATH }};ffmpeg"
           --hidden-import edge_tts
           --hidden-import _bundled_ffmpeg
           --hidden-import video_auto
@@ -52,6 +96,82 @@ jobs:
           --collect-all edge_tts
           --collect-all matplotlib
           webui.py
+
+      - name: Smoke frozen executables
+        run: |
+          .\dist\narravid.exe --help
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          .\dist\narravid-webui.exe --help
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+          $env:NARRAVID_DATA_DIR = Join-Path $env:RUNNER_TEMP 'narravid-webui-smoke'
+          $env:PATH = "$env:SystemRoot\System32;$env:SystemRoot"
+          $proc = Start-Process -FilePath .\dist\narravid-webui.exe `
+            -ArgumentList @('--host', '127.0.0.1', '--port', '5001') `
+            -PassThru -WindowStyle Hidden
+          try {
+            $health = $null
+            for ($attempt = 0; $attempt -lt 60; $attempt++) {
+              if ($proc.HasExited) {
+                throw "narravid-webui.exe exited before becoming ready: $($proc.ExitCode)"
+              }
+              try {
+                $health = Invoke-RestMethod -Uri http://127.0.0.1:5001/api/health -TimeoutSec 5
+                break
+              } catch {
+                Start-Sleep -Seconds 1
+              }
+            }
+            if (-not $health) {
+              throw 'narravid-webui.exe did not become ready in 60 seconds'
+            }
+            if (-not $health.ok -or -not $health.ffmpeg.ok -or -not $health.ffprobe.ok) {
+              throw "frozen health check failed: $($health | ConvertTo-Json -Depth 5 -Compress)"
+            }
+            if ($health.tts.engine -ne 'edge') {
+              throw "frozen WebUI did not load Edge TTS: $($health.tts.engine)"
+            }
+            $bundledFfmpeg = [IO.Path]::GetFullPath([string]$health.ffmpeg.path)
+            $bundledFfprobe = [IO.Path]::GetFullPath([string]$health.ffprobe.path)
+            $ffmpegBundleDir = Split-Path $bundledFfmpeg -Parent
+            $ffprobeBundleDir = Split-Path $bundledFfprobe -Parent
+            if ($ffmpegBundleDir -ne $ffprobeBundleDir) {
+              throw 'frozen ffmpeg and ffprobe resolved from different directories'
+            }
+            $extractDir = Split-Path $ffmpegBundleDir -Parent
+            $bundleLeaf = Split-Path $ffmpegBundleDir -Leaf
+            $extractLeaf = Split-Path $extractDir -Leaf
+            if ($bundleLeaf -ne 'ffmpeg' -or -not $extractLeaf.StartsWith('_MEI')) {
+              throw "frozen media tools did not resolve from _MEIPASS/ffmpeg: $ffmpegBundleDir"
+            }
+            $health | ConvertTo-Json -Depth 5
+          } finally {
+            if ($proc -and -not $proc.HasExited) {
+              taskkill /PID $proc.Id /T /F | Out-Null
+              if ($LASTEXITCODE -ne 0 -and -not $proc.HasExited) {
+                Stop-Process -Id $proc.Id -Force -ErrorAction SilentlyContinue
+              }
+            }
+            $global:LASTEXITCODE = 0
+          }
+
+      - name: Generate checksums
+        shell: python
+        run: |
+          import hashlib
+          from pathlib import Path
+
+          dist = Path('dist')
+          lines = []
+          for name in ('narravid.exe', 'narravid-webui.exe'):
+              path = dist / name
+              with path.open('rb') as source:
+                  digest = hashlib.file_digest(source, 'sha256').hexdigest()
+              lines.append(f'{digest}  {name}')
+          checksums = dist / 'SHA256SUMS.txt'
+          with checksums.open('w', encoding='ascii', newline='\n') as output:
+              output.write('\n'.join(lines) + '\n')
+          print(checksums.read_text(encoding='ascii'), end='')
 
       - name: Extract changelog for this version
         id: changelog
@@ -76,6 +196,7 @@ jobs:
           files: |
             dist/narravid.exe
             dist/narravid-webui.exe
+            dist/SHA256SUMS.txt
           body: |
             ## narravid ${{ github.ref_name }}
 

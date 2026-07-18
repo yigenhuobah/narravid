@@ -82,6 +82,8 @@ def make_handler(path: str, method: str = 'GET', body: bytes = b''):
     h.path = path
     h.request_version = 'HTTP/1.1'
     h.headers = {'Content-Length': str(len(body))}
+    if method in {'POST', 'PUT'}:
+        h.headers['Content-Type'] = 'application/json'
     h.rfile = io.BytesIO(body)
     h.wfile = io.BytesIO()
     h.close_connection = True
@@ -133,6 +135,8 @@ def live_webui(host: str = '127.0.0.1', port: int = 0):
 def http_json(method: str, url: str, payload=None, timeout: float = 30):
     data = None
     headers = {}
+    if payload is None and method in {'POST', 'PUT'}:
+        payload = {}
     if payload is not None:
         data = json.dumps(payload, ensure_ascii=False).encode('utf-8')
         headers['Content-Type'] = 'application/json'

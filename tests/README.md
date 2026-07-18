@@ -119,6 +119,6 @@ test_e2e.py               # full WebUI e2e
 Linux CI installs `ffmpeg` + `fonts-noto-cjk`, runs all unique test layers once, and
 fails below 75% branch coverage. The Windows release workflow repeats that gate before building.
 
-## Project docs
+## Scope notes
 
-See repo `docs/ARCHITECTURE.md`, `docs/REMAINING_DEBT.md` for what tests intentionally do not cover (e.g. multipart upload, per-job CancelToken).
+The suite intentionally does not cover multipart upload or per-job `CancelToken` ownership.

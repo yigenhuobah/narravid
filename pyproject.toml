@@ -23,8 +23,8 @@ extend-exclude = [
 ]
 
 [tool.ruff.lint]
-# Practical CI baseline. Naming conventions for humans live in docs/STYLE.md;
-# pep8-naming (N) is not a hard gate yet — too much legacy short-id debt in webui JS/Python.
+# Practical CI baseline. pep8-naming (N) is not a hard gate yet because
+# webui JS/Python still has substantial legacy short-id debt.
 select = [
   "E",   # pycodestyle errors
   "W",   # pycodestyle warnings

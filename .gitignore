@@ -47,6 +47,7 @@ _fix_bugs.py
 
 # local/private (do not publish)
 CLAUDE.md
+AGENTS.md
 _audit.py
 _fix_bugs.py
 _verify_fix.py

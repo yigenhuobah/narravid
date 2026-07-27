@@ -225,6 +225,17 @@ class TestReleaseWorkflow(unittest.TestCase):
                 marker = f'{command}\n          if ($LASTEXITCODE -ne 0)'
                 self.assertIn(marker, self.workflow)
 
+    def test_manual_release_targets_an_existing_tag(self):
+        self.assertIn('release_tag:', self.workflow)
+        self.assertIn('RELEASE_TAG: ${{ inputs.release_tag || github.ref_name }}', self.workflow)
+        self.assertIn('ref: ${{ inputs.release_tag || github.ref }}', self.workflow)
+        self.assertIn('tag_name: ${{ env.RELEASE_TAG }}', self.workflow)
+
+    def test_job_environment_does_not_use_runner_context(self):
+        job_env = self.workflow.split('    env:', 1)[1].split('    steps:', 1)[0]
+        self.assertNotIn('${{ runner.', job_env)
+        self.assertIn('${{ github.workspace }}', job_env)
+
     def test_frozen_smoke_proves_bundled_tools_and_edge_tts(self):
         self.assertIn("Join-Path $env:ChocolateyInstall 'lib\\ffmpeg'", self.workflow)
         self.assertIn('$ffmpegDir -ne $ffprobeDir', self.workflow)

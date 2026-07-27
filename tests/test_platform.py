@@ -246,7 +246,6 @@ class TestReleaseWorkflow(unittest.TestCase):
         self.assertIn('TMP: ${{ runner.temp }}', test_step)
 
     def test_frozen_smoke_proves_bundled_tools_and_edge_tts(self):
-        self.assertIn('chcp 65001 | Out-Null', self.workflow)
         self.assertIn("Join-Path $env:ChocolateyInstall 'lib\\ffmpeg'", self.workflow)
         self.assertIn('$ffmpegDir -ne $ffprobeDir', self.workflow)
         self.assertIn('$env:PATH = "$env:SystemRoot\\System32;$env:SystemRoot"', self.workflow)
@@ -257,6 +256,21 @@ class TestReleaseWorkflow(unittest.TestCase):
     def test_checksum_writer_forces_lf(self):
         self.assertIn('hashlib.file_digest', self.workflow)
         self.assertIn("newline='\\n'", self.workflow)
+
+
+class TestConsoleEncoding(unittest.TestCase):
+    def test_cli_help_survives_ascii_output_encoding(self):
+        env = os.environ.copy()
+        env['PYTHONIOENCODING'] = 'ascii'
+        proc = subprocess.run(
+            [sys.executable, str(Path(video_auto.__file__).resolve()), '--help'],
+            capture_output=True,
+            env=env,
+            check=False,
+            timeout=15,
+        )
+        self.assertEqual(proc.returncode, 0, proc.stderr.decode('ascii', errors='replace'))
+        self.assertIn(b'usage:', proc.stdout)
 
 
 class TestWebuiDataRoots(unittest.TestCase):

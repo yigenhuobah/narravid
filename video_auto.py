@@ -32,6 +32,8 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from typing import Any, NotRequired, TypedDict
 
+from _console_io import configure_console_io
+
 # ── 统一使用 _bundled_ffmpeg 模块定位自带 ffmpeg ──────────────────
 try:
     import _bundled_ffmpeg
@@ -1621,4 +1623,5 @@ def run_from_manifest_file(manifest_path, output_dir=None, **opts):
 
 
 if __name__ == '__main__':
+    configure_console_io()
     main()

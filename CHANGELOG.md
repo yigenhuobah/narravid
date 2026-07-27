@@ -5,6 +5,15 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+
+- 修复 Windows 发布工作流在 job 级使用非法 `runner.temp` 上下文，恢复 GitHub Actions 执行。
+- 手动发布可指定已有版本标签，且 checkout、变更日志和 Release 始终使用同一标签。
+- Windows 测试统一 UTF-8 输出与临时目录，避免代码页异常和 8.3 短路径误判。
+- CLI 与 WebUI 在受限 Windows 代码页下输出中文帮助或日志时不再因编码错误崩溃。
+
 ## [v1.10.5] - 2026-07-18
 
 ### Fixed — 长期稳定性与安全审计

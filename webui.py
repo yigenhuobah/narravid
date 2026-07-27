@@ -23,6 +23,7 @@ import zipfile
 from http.server import HTTPServer, SimpleHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
+from _console_io import configure_console_io
 from webui_jobs import (  # re-export for tests / external importers
     AUDIO_FILE_EXTS,
     JOBS,
@@ -1323,4 +1324,5 @@ def main():
 
 
 if __name__ == '__main__':
+    configure_console_io()
     main()

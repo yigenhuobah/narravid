@@ -118,8 +118,6 @@ jobs:
 
       - name: Smoke frozen executables
         run: |
-          chcp 65001 | Out-Null
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           .\dist\narravid.exe --help
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           .\dist\narravid-webui.exe --help

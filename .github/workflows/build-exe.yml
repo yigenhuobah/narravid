@@ -20,6 +20,7 @@ jobs:
     env:
       RELEASE_TAG: ${{ inputs.release_tag || github.ref_name }}
       PYINSTALLER_CONFIG_DIR: ${{ github.workspace }}\build\pyinstaller-config
+      PYTHONUTF8: '1'
     steps:
       - uses: actions/checkout@v4
         with:
@@ -78,6 +79,9 @@ jobs:
         run: ruff check .
 
       - name: Run release tests with branch coverage
+        env:
+          TEMP: ${{ runner.temp }}
+          TMP: ${{ runner.temp }}
         run: |
           python -m coverage erase
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }

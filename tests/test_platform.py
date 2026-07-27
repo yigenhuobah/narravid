@@ -235,6 +235,14 @@ class TestReleaseWorkflow(unittest.TestCase):
         job_env = self.workflow.split('    env:', 1)[1].split('    steps:', 1)[0]
         self.assertNotIn('${{ runner.', job_env)
         self.assertIn('${{ github.workspace }}', job_env)
+        self.assertIn("PYTHONUTF8: '1'", job_env)
+
+    def test_release_tests_use_runner_temp_at_step_scope(self):
+        test_step = self.workflow.split('      - name: Run release tests', 1)[1].split(
+            '      - name:', 1
+        )[0]
+        self.assertIn('TEMP: ${{ runner.temp }}', test_step)
+        self.assertIn('TMP: ${{ runner.temp }}', test_step)
 
     def test_frozen_smoke_proves_bundled_tools_and_edge_tts(self):
         self.assertIn("Join-Path $env:ChocolateyInstall 'lib\\ffmpeg'", self.workflow)
@@ -675,7 +683,7 @@ class TestBundledFfmpeg(unittest.TestCase):
             (directory / fallback).write_bytes(b'fallback')
             self.assertEqual(
                 _bundled_ffmpeg._first_existing(directory, 'ffmpeg'),
-                str(directory / primary),
+                str((directory / primary).resolve()),
             )
 
     def test_environment_override_wins_over_bundled_and_path(self):
@@ -703,8 +711,8 @@ class TestBundledFfmpeg(unittest.TestCase):
                 mock.patch.object(sys, '_MEIPASS', str(extract), create=True),
                 mock.patch.object(_bundled_ffmpeg, '_which_tool') as which_tool,
             ):
-                self.assertEqual(_bundled_ffmpeg.get_ffmpeg(), str(custom_ffmpeg))
-                self.assertEqual(_bundled_ffmpeg.get_ffprobe(), str(custom_ffprobe))
+                self.assertEqual(_bundled_ffmpeg.get_ffmpeg(), str(custom_ffmpeg.resolve()))
+                self.assertEqual(_bundled_ffmpeg.get_ffprobe(), str(custom_ffprobe.resolve()))
             which_tool.assert_not_called()
 
     def test_environment_override_directory_is_ignored(self):
@@ -775,8 +783,8 @@ class TestBundledFfmpeg(unittest.TestCase):
                 mock.patch.object(sys, '_MEIPASS', str(base / 'extract'), create=True),
                 mock.patch.object(sys, 'executable', str(executable)),
             ):
-                self.assertEqual(_bundled_ffmpeg.get_ffmpeg(), str(extract_paths['ffmpeg']))
-                self.assertEqual(_bundled_ffmpeg.get_ffprobe(), str(extract_paths['ffprobe']))
+                self.assertEqual(_bundled_ffmpeg.get_ffmpeg(), str(extract_paths['ffmpeg'].resolve()))
+                self.assertEqual(_bundled_ffmpeg.get_ffprobe(), str(extract_paths['ffprobe'].resolve()))
 
     def test_frozen_executable_adjacent_bundle_without_meipass(self):
         with tempfile.TemporaryDirectory() as td:
@@ -798,8 +806,8 @@ class TestBundledFfmpeg(unittest.TestCase):
                 mock.patch.object(sys, '_MEIPASS', None, create=True),
                 mock.patch.object(sys, 'executable', str(executable)),
             ):
-                self.assertEqual(_bundled_ffmpeg.get_ffmpeg(), str(adjacent_paths['ffmpeg']))
-                self.assertEqual(_bundled_ffmpeg.get_ffprobe(), str(adjacent_paths['ffprobe']))
+                self.assertEqual(_bundled_ffmpeg.get_ffmpeg(), str(adjacent_paths['ffmpeg'].resolve()))
+                self.assertEqual(_bundled_ffmpeg.get_ffprobe(), str(adjacent_paths['ffprobe'].resolve()))
 
     def test_path_lookup_is_used_when_no_bundle_exists(self):
         with tempfile.TemporaryDirectory() as td:

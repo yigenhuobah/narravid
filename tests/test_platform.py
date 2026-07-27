@@ -236,6 +236,7 @@ class TestReleaseWorkflow(unittest.TestCase):
         self.assertNotIn('${{ runner.', job_env)
         self.assertIn('${{ github.workspace }}', job_env)
         self.assertIn("PYTHONUTF8: '1'", job_env)
+        self.assertIn('PYTHONIOENCODING: utf-8', job_env)
 
     def test_release_tests_use_runner_temp_at_step_scope(self):
         test_step = self.workflow.split('      - name: Run release tests', 1)[1].split(
@@ -245,6 +246,7 @@ class TestReleaseWorkflow(unittest.TestCase):
         self.assertIn('TMP: ${{ runner.temp }}', test_step)
 
     def test_frozen_smoke_proves_bundled_tools_and_edge_tts(self):
+        self.assertIn('chcp 65001 | Out-Null', self.workflow)
         self.assertIn("Join-Path $env:ChocolateyInstall 'lib\\ffmpeg'", self.workflow)
         self.assertIn('$ffmpegDir -ne $ffprobeDir', self.workflow)
         self.assertIn('$env:PATH = "$env:SystemRoot\\System32;$env:SystemRoot"', self.workflow)
